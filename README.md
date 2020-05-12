@@ -16,13 +16,13 @@ It checks for load, bloat, long queries, blocked queries
 
 ## examples
 `/apps/opt/postgres/sc/pg_report.py -H $HOST -d $DB -p 5432 -u dbadmin --action load --cpus 64 --cpumaxpct 80 -s 'LOCUS PROD WRITER' --notify  >> /postgres/home/log/pg_report.log 2>&1`
-<br/>
+<br/><br/>
 `/apps/opt/postgres/sc/pg_report.py -H $HOST -d $DB -p 5432 -u dbadmin --action longquery --maxmin 10 -s 'LOCUS PROD WRITER' --notify  >> /postgres/home/log/pg_report.log 2>&1`
-<br/>
+<br/><br/>
 `/apps/opt/postgres/sc/pg_report.py -H $HOST -d $DB -p 5432 -u dbadmin --action blockedqueries -s 'LOCUS PROD WRITER'  --notify >> /postgres/home/log/pg_report.log 2>&1`
-<br/>
+<br/><br/>
 `/apps/opt/postgres/sc/pg_report.py -H $HOST -d $DB -p 5432 -u dbadmin --action uptime -s 'LOCUS PROD WRITER' --notify  >> /postgres/home/log/pg_report.log 2>&1`
-<br/>
+<br/><br/>
 `/apps/opt/postgres/sc/pg_report.py -H $HOST -d $DB -p 5432 -u dbadmin --action bloat --bloatpct 50 -s 'LOCUS PROD WRITER' --notify  >> /postgres/home/log/pg_report.log 2>&1`
-<br/>
+<br/><br/>
 
