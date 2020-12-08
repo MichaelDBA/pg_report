@@ -28,36 +28,18 @@
 #
 # Description: This python utility program performs PostgreSQL maintenance tasks.
 #
-# Inputs: all fields are optional except database and action.
+# Inputs: all fields are optional except database.
 # -h <hostname or IP address>
 # -d <database>
 # -n <schema>
 # -p <PORT>
 # -u <db user>
-# -l <load threshold>
-# -w <max rows>
-# -o <work window in minutes>
-# -e <max .ready files>
-# -a <action: ANALYZE, VACUUM_ANALYZE, VACUUM_FREEZE, REPORT>
 # -m [html format flag]
 # -r [dry run flag]
-# -s [smart mode flag]
 # -v [verbose output flag, mostly used for debugging]
 #
-# Examples:
-#
-# -- vacuum analyze for all user tables in the database but only if load is less than 20% and rows < 1 mil
-# ./pg_maint.py -h localhost -d test -p 5433 -u postgres -a vacuum_analyze -l 20 -w 1000000
-#
-# -- same thing as previous one, but do a dry run.  This is useful to see wht commands will be executed, or is also
-#    useful for generating DDL so you can run it manually
-# ./pg_maint.py -h localhost -d test -p 5433 -u postgres -a vacuum_analyze -l 20 -w 1000000 -r
-#
-# -- smart analyze for all user tables in specific schema, but only if load is less than 40% and rows < 1 mil
-# ./pg_maint.py -h localhost -d test -n public -p 5433 -s -u postgres -a analyze -l 40 -w 1000000
-#
-# -- run report on entire test database:
-# ./pg_maint.py -d test -a report
+# Examples: run report on entire test database and output in web format
+# ./pg_report.py -d test --html
 #
 # Requirements:
 #  1. python 2.6 or 2.7
@@ -65,7 +47,7 @@
 #  3. psutil for windows only: https://pypi.python.org/pypi?:action=display&name=psutil#downloads
 #      (fyi for gettting it on linux but not required: apt-get install python-psutil or yum install python-psutil)
 #
-# Download: git clone https://github.com/commandprompt/pg_maint.git pg_maint
+# Download: git clone https://github.com/commandprompt/pg_report.git pg_report
 #
 # Assumptions:
 # 1. db user defaults to postgres if not provided as parameter.
@@ -73,24 +55,12 @@
 # 3. Password must be in local .pgpass file or client authentication changed to trust or peer
 # 4. psql must be in the user's path
 # 6. Load detection assumes that you are running this script from the database host.
-# 7. SMART type will only consider tables whose pg_class.reltuples value is greater than zero.
-#    This value can be zero even if a few rows are in the table, because pg_class.reltuples is also a close estimate.
-# 8. For analyze, vacuum_analyze, and vacuum_freeze actions, tables with over MAXROWS rows are not
-#    refreshed and are output in file, /tmp/PROGRAMPID_stats_deferred.sql
-#
-# -s (smart mode) dictates a filter algorithm to determine what tables will qualify for the maintenance commands.
-# For analyze and vacuum analyze:
-#     1. Refresh tables with no recent analyze or autovacuum_analyze in the last 60 days.
-#     2. Refresh tables where pg_stat_user_tables.n_live_tup is less than half of pg_class.reltuples
-# For vacuum freeze:
-#     1. Refresh tables where current high XID age divided by autovacuum_freeze_max_age > 70%.
-#
 #
 # Cron Job Info:
 #    View cron job output: view /var/log/cron
 #    source the database environment: source ~/db_catalog.ksh
 #    Example cron job that does smart vacuum freeze commands for entire database every Saturday at 4am:
-#    * 4 * * 6 /usr/bin/python /var/lib/pgsql/pg_maint/pg_maint.py -d evergreen -p 5432 -a vacuum_freeze -s -l 30 -w 1000000000 >> /var/lib/pgsql/pg_maint/pg_maint_`/bin/date +'\%Y\%m\%d'`.log 2>&1
+#    * 4 * * 6 /usr/bin/python /var/lib/pgsql/pg_tools/pg_report.py -d evergreen -p 5432 --html >> /var/lib/pgsql/pgtools/pg_report_`/bin/date +'\%Y\%m\%d'`.log 2>&1
 #
 # NOTE: You may have to source the environment variables file in the crontab to get this program to work.
 #          #!/bin/bash
@@ -128,7 +98,7 @@
 # Michael Vitale        01/28/2016      Fixed python piping to use bash as default shell
 # Michael Vitale        10/04/2017      Fix queries based on PG versions since 9.5 (ie 9.6 and 10)
 # Michael Vitale        10/16/2020      Qualify vacuumlo command with port number. It had assumed default, 5432
-# Michael Vitale        12/08/2020      Majore rewrite: converted pg_maint health check portion to replace old pg_report
+# Michael Vitale        12/08/2020      Majore rewrite: converted pg_maint health check portion to replace old pg_report that also did vacuum actions
 ################################################################################################################
 import string, sys, os, time, datetime, exceptions
 import tempfile, platform, math
@@ -154,6 +124,8 @@ DESCRIPTION="This python utility program performs a basic health check for a Pos
 VERSION    = 2.0
 PROGNAME   = "pg_report"
 ADATE      = "December 8, 2020"
+MARK_OK    = "[ OK ]  "
+MARK_WARN  = "[WARN]  "
 
 #############################################################################################
 ########################### class definition ################################################
@@ -190,13 +162,12 @@ class maint:
         self.imageURL          = "https://cloud.githubusercontent.com/assets/12436545/12725212/7a1a27be-c8df-11e5-88a6-4e6a88004daa.jpg"
 
         self.slaves            = []
+        self.slavecnt          = 0
         self.in_recovery       = False
         self.bloatedtables     = False
         self.unusedindexes     = False
         self.freezecandidates  = False
         self.analyzecandidates = False
-        self.workwindowmins    = 180  # default max is 3 hours
-        self.max_ready_files   = 1000
         self.timestartmins     = time.time() / 60
 
         # db config stuff
@@ -210,8 +181,7 @@ class maint:
 
 
     ###########################################################
-    def set_dbinfo(self, action, dbhost, dbport, dbuser, database, schema, html_format, dry_run, verbose, argv):
-        self.action          = action.upper()
+    def set_dbinfo(self, dbhost, dbport, dbuser, database, schema, html_format, dry_run, verbose, argv):
         self.dbhost          = dbhost
         self.dbport          = dbport
         self.dbuser          = dbuser
@@ -237,7 +207,11 @@ class maint:
         self.workfile          = "%s%s%s_stats.sql" % (self.tempdir, self.dir_delim, self.pid)
         self.workfile_deferred = "%s%s%s_stats_deferred.sql" % (self.tempdir, self.dir_delim, self.pid)
         self.tempfile          = "%s%s%s_temp.sql" % (self.tempdir, self.dir_delim, self.pid)
-        self.reportfile        = "%s%s%s_report.html" % (self.tempdir, self.dir_delim, self.pid)
+        if self.html_format:
+            self.reportfile        = "%s%s%s_report.html" % (self.tempdir, self.dir_delim, self.pid)
+        else:    
+            self.reportfile        = "%s%s%s_report.txt" % (self.tempdir, self.dir_delim, self.pid)
+        
 
         # construct the connection string that will be used in all database requests
         # do not provide host name and/or port if not provided
@@ -302,13 +276,6 @@ class maint:
         if rc <> SUCCESS:
             return rc, errors
 
-        if self.action == 'ANALYZE':
-            self.actstring = 'ANALYZE VERBOSE '
-        elif self.action == 'VACUUM_ANALYZE':
-            self.actstring = 'VACUUM ANALYZE VERBOSE '
-        elif self.action == 'VACUUM_FREEZE':
-            self.actstring = 'VACUUM FREEZE ANALYZE VERBOSE '
-
         return SUCCESS, ''
 
     ###########################################################
@@ -316,11 +283,6 @@ class maint:
 
         if self.database == '':
             return ERROR, "Database not provided."
-        if self.action == '':
-            return ERROR, "Action not provided."
-
-        if self.action not in ('ANALYZE', 'VACUUM_ANALYZE', 'VACUUM_FREEZE', 'REPORT'):
-            return ERROR, "Invalid Action.  Valid actions are: ANALYZE, VACUUM_ANALYZE, VACUUM_FREEZE, or REPORT."
 
         return SUCCESS, ""
 
@@ -693,7 +655,8 @@ class maint:
             # pg_stat_replication table does not exist
             return SUCCESS, ""
 
-        sql = "select client_addr from pg_stat_replication where state = 'streaming' order by 1"
+        sql = "select count(*) from pg_stat_replication where state = 'streaming'"
+        
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc <> SUCCESS:
@@ -701,7 +664,10 @@ class maint:
             aline = "%s" % (errors)
             self.writeout(aline)
             return rc, errors
-        self.slaves = results.split('\n')
+        print "results=%s" % results    
+        cols = results.split('|')            
+        self.slavecnt = int(cols[0].strip())
+        print "slaves=%d" % self.slavecnt
 
         # Also check whether this cluster is a master or slave
         # self.in_recovery
@@ -739,7 +705,7 @@ class maint:
             "<!DOCTYPE html>\n" + \
             "<HTML>\n" + \
             "<HEAD>\n" + \
-            "<TITLE>pg_maint Maintenance Report</TITLE>\n" + \
+            "<TITLE>PostgreSQL Report Analysis</TITLE>\n" + \
             "</HEAD>\n" + \
             "<style>" + \
             ".table1 {font-size:16px; border:1px solid black; border-collapse:collapse; }" + \
@@ -750,10 +716,10 @@ class maint:
             "<BODY BGCOLOR=\"FFFFFF\">\n" + \
             "<div id='container'>\n" + \
             "<img src='" + self.imageURL + "' style='float: left;'/>\n" + \
-            "<p><H1>pg_maint Maintenance Report</H1></p>\n" + \
+            "<p><H1>PostgreSQL Report Analysis</H1></p>\n" + \
             "</div>\n" + contextline + \
-            "<a href=\"https://github.com/MichaelDBA/pg_maint\">pg_maint</a>  is available on github.\n" + \
-            "Send me mail at <a href=\"mailto:michael@sqlexec.com\"> support@sqlexec.com</a>.\n" + \
+            "<a href=\"https://github.com/MichaelDBA/pg_report\">pg_report</a>  is available on github.\n" + \
+            "Send me mail at <a href=\"mailto:michaeldba@sqlexec.com\"> support@sqlexec.com</a>.\n" + \
             "<HR>\n"
 
         f.write(info)
@@ -780,8 +746,6 @@ class maint:
 
     ###########################################################
     def do_report(self):
-        if self.action not in ('REPORT'):
-            return NOTICE, "N/A"
 
         if self.html_format:
             rc,results = self.initreport()
@@ -828,7 +792,9 @@ class maint:
                 return rc, results
 
             print "html report file generated: %s" % self.reportfile
-
+        else:
+            print "text report file generated: %s" % self.reportfile
+        
         return SUCCESS, ""
 
     ###########################################################
@@ -907,13 +873,16 @@ class maint:
         # set it to 85% of memory
         recommended_effective_cache_size = .85 * self.totalmemGB
 
-        print "Current and recommended PG Memory configuration settings. Total Memory = %s GB" % self.totalmemGB
-        print "*** Consider changing these values if they differ significantly ***"
-        totalf = "PG Memory Values are based on a dedicated PG Server and total physical memory available: %04d GB" % (self.totalmemGB)
+        totalf = "Current and recommended PG Memory configuration settings are based on a dedicated PG Server with one PG Instance. Total Physical Memory = %s GB" % self.totalmemGB
         print totalf
-        totalf = "<H4>" + totalf + "</H4>"
+        print "*** Consider changing these values if they differ significantly ***"
+
         if self.html_format:
+            totalf = "<H4>" + totalf + "</H4>"
             self.appendreport(totalf)
+        else:
+            self.appendreport(totalf+"\n")
+            
         effective_cache_size_f = "%04d GB" % (self.eff_cache_size  / 1024)
         recommended_effective_cache_size_f = "%04d GB" % recommended_effective_cache_size
         print "effective_cache_size:    %s  recommended: %s" % (effective_cache_size_f, recommended_effective_cache_size_f)
@@ -943,7 +912,11 @@ class maint:
             html +="<tr valign=\"top\">\n" + "<td align=\"left\">work_mem</td>\n" + "<th align=\"center\">" + str(work_mem_f) + "</th>\n" + "<th align=\"center\">" + str(recommended_work_mem_f) + "</th>\n" + "</tr>\n" + "</table>"
             self.appendreport(html)
             self.appendreport("<p><br></p>")
-
+        else:
+            self.appendreport("effective_cache_size: %s   recommended: %s\n" % (effective_cache_size_f, recommended_effective_cache_size_f))
+            self.appendreport("shared_buffers      : %s   recommended: %s\n" % (shared_buffers_f, recommended_shared_buffers_f))
+            self.appendreport("maintenance_work_mem: %s   recommended: %s\n" % (maintenance_work_mem_f, recommended_maintenance_work_mem_f))
+            self.appendreport("work_mem            : %s   recommended: %s\n" % (work_mem_f, recommended_work_mem_f))
 
         return SUCCESS, ""
 
@@ -970,7 +943,8 @@ class maint:
 
         if self.html_format:
             self.appendreport("<H4>Bloated tables/indexes are identified where at least 20% of the table/index is bloated or the wasted bytes is > 10 GB.</H4>\n")
-        print "Bloated tables/indexes are identified where at least 20% of the table/index is bloated or the wasted bytes is > 10 GB."
+        else:    
+            self.appendreport("Bloated tables/indexes are identified where at least 20% of the table/index is bloated or the wasted bytes is > 10 GB.\n")
 
         f = open(self.tempfile, "r")
         lineno = 0
@@ -990,7 +964,8 @@ class maint:
             if self.html_format:
                 msg = "%s" % aline
                 self.appendreport(msg)
-            print "%s\n" % (aline)
+            else:
+                self.appendreport("%s\n" % (aline))
 
         if self.html_format:
             self.appendreport("<p><br></p>")
@@ -1005,15 +980,6 @@ class maint:
 
         if self.unusedindexes == False:
             return SUCCESS, ""
-
-        # See if this cluster has dependent slaves and if so give information warning
-        slavecnt = len(self.slaves)
-        if slavecnt > 0:
-            msg = "%d slave(s) are dependent on this cluster.  Make sure these unused indexes are also unused on the slave(s) before considering them as index drop candidates." % slavecnt
-            if self.html_format:
-                msg = "<H4><p style=\"color:red;\">" + msg + "</p><H4>"
-                self.appendreport(msg)
-            print msg
 
         # Criteria is indexes that are used less than 20 times and whose table size is > 100MB
         sql="SELECT relname as table, schemaname||'.'||indexrelname AS fqindexname, pg_size_pretty(pg_relation_size(indexrelid)) as total_size, pg_relation_size(indexrelid) as raw_size, idx_scan as index_scans FROM pg_stat_user_indexes JOIN pg_index USING(indexrelid) WHERE idx_scan = 0 AND idx_tup_read = 0 AND idx_tup_fetch = 0 AND NOT indisprimary AND NOT indisunique AND NOT indisexclusion AND indisvalid AND indisready AND pg_relation_size(indexrelid) > 8192 ORDER BY 4 DESC"
@@ -1031,7 +997,18 @@ class maint:
 
         if self.html_format:
             self.appendreport("<H4>Unused indexes are identified where there are no index scans and the size of the index is > 8 KB.</H4>\n")
-        print "Unused indexes are identified where there are no index scans and the size of the index  is > 8 KB."
+        else:    
+            self.appendreport("Unused indexes are identified where there are no index scans and the size of the index  is > 8 KB.\n")
+
+        # See if this cluster has dependent slaves and if so give information warning
+        if self.slavecnt > 0:
+            msg = "%d slave(s) are dependent on this cluster.  Make sure unused indexes are also unused on the slave(s) before considering them as index drop candidates.\n" % self.slavecnt
+            print msg
+            if self.html_format:
+                msg = "<H4><p style=\"color:red;\">" + msg + "</p><H4>"
+                self.appendreport(msg)
+            else:
+                self.appendreport(msg+"\n")
 
         f = open(self.tempfile, "r")
         lineno = 0
@@ -1049,11 +1026,13 @@ class maint:
             if lineno == 1:
                 if self.html_format:
                     self.appendreport(aline)
-                print "                 %s" % aline
+                else:
+                    self.appendreport("          %s\n" % aline)
             else:
-                print "%s" % aline
                 if self.html_format:
                     self.appendreport(aline)
+                else:
+                    self.appendreport("%s\n" % aline)
         if self.html_format:
             self.appendreport("<p><br></p>")
         f.close()
@@ -1077,7 +1056,8 @@ class maint:
 
             if self.html_format:
                 self.appendreport("<H4>List of tables that are past the midway point of going into transaction wraparound mode and therefore candidates for manual vacuum freeze.</H4>")
-            print "List of tables that are past the midway point of going into transaction wraparound mode and therefore candidates for manual vacuum freeze."
+            else:
+                self.appendreport("List of tables that are past the midway point of going into transaction wraparound mode and therefore candidates for manual vacuum freeze.")
 
             f = open(self.tempfile, "r")
             lineno = 0
@@ -1096,12 +1076,14 @@ class maint:
 
                 if lineno == 1:
                     if self.html_format:
-                         self.appendreport(aline)
-                    print "%s" % aline
+                        self.appendreport(aline)
+                    else:     
+                        self.appendreport("%s" % aline)
                 else:
                     if self.html_format:
                          self.appendreport(aline)
-                    print "%s" % aline
+                    else:
+                        self.appendreport("%s" % aline)
             f.close()
             if self.html_format:
                 self.appendreport("<p><br></p>")
@@ -1117,6 +1099,7 @@ class maint:
             cmd = "psql %s --html -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
         else:
             cmd = "psql %s -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
+            
         rc, results = self.executecmd(cmd, False)
         if rc <> SUCCESS:
             errors = "Unable to get user table stats: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1126,7 +1109,8 @@ class maint:
 
         if self.html_format:
             self.appendreport("<H4>List of tables that have not been analyzed or vacuumed (manual and auto) in the last 60 days or whose size has changed significantly (n_live_tup/reltuples * 100 < 50) and therefore candidates for manual vacuum analyze.</H4>")
-        print "List of tables that have not been analyzed or vacuumed (manual and auto) in the last 60 days or whose size has changed significantly (n_live_tup/reltuples * 100 < 50) and therefore candidates for manual vacuum analyze."
+        else:    
+            self.appendreport("List of tables that have not been analyzed or vacuumed (manual and auto) in the last 60 days or whose size has changed significantly (n_live_tup/reltuples * 100 < 50) and therefore candidates for manual vacuum analyze.\n")
 
         f = open(self.tempfile, "r")
         lineno = 0
@@ -1144,11 +1128,13 @@ class maint:
             if lineno == 1:
                 if self.html_format:
                     self.appendreport(aline)
-                print "                      %s" % aline
+                else:
+                    self.appendreport("              %s\n" % aline)
             else:
                 if self.html_format:
                     self.appendreport(aline)
-                print "%s" % aline
+                else:
+                    self.appendreport("%s\n" % aline)
 
         if self.html_format:
             self.appendreport("<p><br></p>")
@@ -1160,9 +1146,10 @@ class maint:
     def do_report_healthchecks(self):
 
         # setup special table format
-        html = "<table class=\"table1\" style=\"width:100%\"> <caption><h3>Health Checks</h3></caption>" + \
-               "<tr> <th>Status</th> <th>Category</th> <th>Analysis</th> </tr>"
-        self.appendreport(html)
+        if self.html_format:
+            html = "<table class=\"table1\" style=\"width:100%\"> <caption><h3>Health Checks</h3></caption>" + \
+                   "<tr> <th>Status</th> <th>Category</th> <th>Analysis</th> </tr>"
+            self.appendreport(html)
 
         '''
         slavecnt = len(self.slaves)
@@ -1196,17 +1183,22 @@ class maint:
         blks_hit    = int(cols[1].strip())
         cache_ratio = Decimal(cols[2].strip())
         if cache_ratio < Decimal('70.0'):
+            marker = MARK_WARN
             msg = "low cache hit ratio: %.2f (blocks hit vs blocks read)" % cache_ratio
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10004;</font></td><td width=\"20%\"><font color=\"red\">Cache Hit Ratio</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
         elif cache_ratio < Decimal('90.0'):
+            marker = MARK_WARN        
             msg = "Moderate cache hit ratio: %.2f (blocks hit vs blocks read)" % cache_ratio
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Cache Hit Ratio</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
         else:
+            marker = MARK_OK
             msg = "High cache hit ratio: %.2f (blocks hit vs blocks read)" % cache_ratio
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Cache Hit Ratio</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
         if self.html_format:
             self.appendreport(html)
-        print msg
+        else:
+            self.appendreport(marker+msg+"\n")
+        print marker+msg
 
 
         ######################################################
@@ -1228,14 +1220,18 @@ class maint:
 
         if percentconns > 80:
             # 80 percent is the hard coded threshold
+            marker = MARK_WARN        
             msg = "Current connections (%d) are greater than 80%% of max connections (%d) " % (conns, self.max_connections)
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Connections</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
         else:
+            marker = MARK_OK
             msg = "Current connections (%d) are not too close to max connections (%d) " % (conns, self.max_connections)
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Connections</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
         if self.html_format:
             self.appendreport(html)
-        print msg
+        else:
+            self.appendreport(marker+msg+"\n")            
+        print marker+msg
 
 
         #######################################################################
@@ -1259,14 +1255,18 @@ class maint:
         idle_in_transaction_cnt = int(results)
 
         if idle_in_transaction_cnt == 0:
+            marker = MARK_OK
             msg = "No \"idle in transaction\" longer than 10 minutes were detected."
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Idle In Transaction</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
         else:
+            marker = MARK_WARN
             msg = "%d \"idle in transaction\" longer than 15 minutes were detected." % idle_in_transaction_cnt
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Idle In Transaction</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
         if self.html_format:
             self.appendreport(html)
-        print msg
+        else:
+            self.appendreport(marker+msg+"\n")
+        print marker+msg
 
 
         ######################################
@@ -1290,14 +1290,18 @@ class maint:
         long_queries_cnt = int(results)
 
         if long_queries_cnt == 0:
+            marker = MARK_OK
             msg = "No \"long running queries\" longer than 5 minutes were detected."
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Long Running Queries</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
         else:
+            marker = MARK_WARN
             msg = "%d \"long running queries\" longer than 5 minutes were detected." % long_queries_cnt
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Long Running Queries</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
         if self.html_format:
             self.appendreport(html)
-        print msg
+        else:
+            self.appendreport(marker+msg+"\n")
+        print marker+msg
 
 
         ##########################################################
@@ -1321,17 +1325,19 @@ class maint:
             self.writeout(aline)
             return rc, errors
         blocked_queries_cnt = int(results)
-
         if blocked_queries_cnt == 0:
+            marker = MARK_OK
             msg = "No \"Waiting/Blocked queries\" longer than 30 seconds were detected."
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Waiting/Blocked queries</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
         else:
+            marker = MARK_WARN
             msg = "%d \"Waiting/Blocked queries\" longer than 30 seconds were detected." % blocked_queries_cnt
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Waiting/Blocked queries</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
         if self.html_format:
             self.appendreport(html)
-        print msg
-
+        else:
+            self.appendreport(marker+msg+"\n")
+        print marker+msg
 
         #################################
         # get archiving info if available
@@ -1350,26 +1356,39 @@ class maint:
 
         if readycnt > 1000:
             if self.html_format:
+                marker = MARK_WARN
                 msg = "Archiving is behind more than 1000 WAL files. Current count: %d" % readycnt
                 html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Archiving Status</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
 
         elif readycnt == 0:
             if self.archive_mode == 'on':
+                marker = MARK_OK
+                msg = "Archiving is on and no WAL backup detected."            
                 if self.html_format:
-                    msg = "Archiving is on and no WAL backup detected."
                     html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Archiving Status</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
+                else:
+                    msg = "Archiving Status: %s" % msg 
             else:
+                marker = MARK_OK
+                msg = "Archiving is off so nothing to analyze."
                 if self.html_format:
-                    msg = "Archiving is off so nothing to analyze."
                     html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Archiving Status</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
+                else:
+                    msg = "Archiving Status: %s" % msg 
+                    
         else:
+            marker = MARK_OK
+            msg = "Archiving is working and not too far behind. WALs waiting to be archived=%d" % readycnt
             if self.html_format:
-                msg = "Archiving is working and not too far behind. WALs waiting to be archived=%d" % readycnt
                 html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Archiving Status</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
+            else:
+                msg = "Archiving Status: %s" % msg 
 
-        print msg
         if self.html_format:
             self.appendreport(html)
+        else:
+            self.appendreport(marker+msg+"\n")
+        print marker+msg
 
         ###########################################################################################################################################
         # database conflicts: only applies to PG versions greater or equal to 9.1.  9.2 has additional fields of interest: deadlocks and temp_files
@@ -1408,16 +1427,19 @@ class maint:
             print
 
         if conflicts > 0 or deadlocks > 0 or temp_files > 0:
+            marker = MARK_WARN
             msg = "Database conflicts found: database=%s  conflicts=%d  deadlocks=%d  temp_files=%d" % (database, conflicts, deadlocks, temp_files)
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Database Conflicts (deadlocks, Query disk spillover, Standby cancelled queries)</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
         else:
+            marker = MARK_OK
             msg = "No database conflicts found."
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Database Conflicts (deadlocks, Query disk spillover, Standby cancelled queries</font></td><td width=\"75%\"><font color=\"blue\">No database conflicts found.</font></td></tr>"
 
-        print msg
         if self.html_format:
             self.appendreport(html)
-
+        else:
+            self.appendreport(marker+msg+"\n")
+        print marker+msg
 
         ###############################################################################################################
         # Check for checkpoint frequency
@@ -1444,19 +1466,101 @@ class maint:
         avg_checkpoint_seconds = ((checkpoint_write_time + checkpoint_sync_time) / (checkpoints_timed + checkpoints_req))
 
         if minutes < Decimal('5.0'):
+            marker = MARK_WARN
             msg = "Checkpoints are occurring too fast, every %.2f minutes, and taking about %d minutes on average." % (minutes, (avg_checkpoint_seconds / 60))
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Checkpoint Frequency</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
         elif minutes > Decimal('60.0'):
+            marker = MARK_WARN
             msg = "Checkpoints are occurring too infrequently, every %.2f minutes, and taking about %d minutes on average." % (minutes, (avg_checkpoint_seconds / 60))
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Checkpoint Frequency</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                  
         else:
+            marker = MARK_OK
             msg = "Checkpoints are occurring every %.2f minutes, and taking about %d minutes on average." % (minutes, (avg_checkpoint_seconds / 60))
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Checkpoint Frequency</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
 
-        print msg
         if self.html_format:
             self.appendreport(html)
+        else:
+            self.appendreport(marker+msg+"\n")
+        print marker+msg
 
+        ####################################
+        # Check some postgresql config parms
+        ####################################
+        sql = "with summary as (select name, setting from pg_settings where name in ('autovacuum', 'checkpoint_completion_target', 'data_checksums', 'idle_in_transaction_session_timeout', 'log_checkpoints', 'log_lock_waits',  'log_min_duration_statement', 'log_temp_files', 'shared_preload_libraries', 'track_activity_query_size') order by 1 ) select setting from summary order by name"
+        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)        
+        rc, results = self.executecmd(cmd, False)
+        if rc <> SUCCESS:
+            errors = "Unable to get configuration parameters: %d %s\nsql=%s\n" % (rc, results, sql)
+            aline = "%s" % (errors)
+            self.writeout(aline)
+            return rc, errors        
+        # since we have multiple rows, we split based on carriage return, not pipe when one row is returned
+        cols = results.split('\n')
+
+        autovacuum                           = cols[0].strip()
+        checkpoint_completion_target         = Decimal(cols[1].strip())
+        data_checksums                       = cols[2].strip()
+        idle_in_transaction_session_timeout = int(cols[3].strip())
+        log_checkpoints                     = cols[4].strip()
+        log_lock_waits                      = cols[5].strip()
+        log_min_duration_statement          = int(cols[6].strip())
+        log_temp_files                      = cols[7].strip()
+        shared_preload_libraries            = cols[8].strip()
+        track_activity_query_size           = int(cols[9].strip())
+
+        #print "autovac=%s  chk_target=%s  sums=%s  idle=%s  log_checkpoints=%s  log_locks= %s  log_min=%s  log_temp=%s  shared=%s  track=%s" \
+        #      % (autovacuum, checkpoint_completion_target, data_checksums, idle_in_transaction_session_timeout, log_checkpoints, log_lock_waits, 
+        #      log_min_duration_statement, log_temp_files, shared_preload_libraries, track_activity_query_size)
+
+        msg = ''              
+        if autovacuum <> 'on':
+            marker = MARK_WARN
+            msg = "autovacuum is turned off.  "
+        if checkpoint_completion_target <= 0.6:
+            marker = MARK_WARN
+            msg+= "checkpoint_completion_target is less than optimal.  "            
+        if data_checksums <> 'on':
+            marker = MARK_WARN
+            msg+= "data checksums is turned off.  "
+        if idle_in_transaction_session_timeout == '0':
+            marker = MARK_WARN
+            msg+= "idle_in_transaction_session_timeout is turned off.  "
+        if log_checkpoints <> 'on':
+            marker = MARK_WARN
+            msg+= "log_checkpoints is turned off.  "
+        if log_lock_waits <> 'on':
+            marker = MARK_WARN
+            msg+= "log_lock_waits is turned off.  "            
+        if log_min_duration_statement == '-1':
+            marker = MARK_WARN
+            msg+= "log_min_duration_statement is turned off.  "
+        if log_temp_files == '-1':
+            marker = MARK_WARN
+            msg+= "log_temp_files is turned off.  "             
+        if 'pg_stat_statements' not in shared_preload_libraries:
+            marker = MARK_WARN
+            msg+= "pg_stat_statements extension is not loaded.  "
+        if track_activity_query_size < 8192:
+            marker = MARK_WARN
+            msg+= "track_activity_query_size may need to be increased or log queries may be truncated.  " 
+
+        if msg <> '':
+            marker = MARK_WARN        
+            html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Configuration Settings</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>" 
+        else:
+            marker = MARK_OK
+            msg = "No configuration problems detected."
+            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Configuration Settings</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"                         
+
+        if self.html_format:
+            self.appendreport(html)
+        else:
+            self.appendreport(marker+msg+"\n")
+        print marker+msg            
+
+
+        
         ############################################################
         # Check checkpoints, background writers, and backend writers
         ############################################################
@@ -1469,7 +1573,6 @@ class maint:
             aline = "%s" % (errors)
             self.writeout(aline)
             return rc, errors
-
         cols = results.split('|')
         checkpoints_timed     = int(cols[0].strip())
         checkpoints_req       = int(cols[1].strip())
@@ -1498,23 +1601,41 @@ class maint:
 
         msg = ''
         if buffers_backend_fsync > 0:
+            marker = MARK_WARN
             msg = "bgwriter fsync request queue is full. Backend using fsync.  "
         if backend_write_pct > (checkpoint_write_pct + background_write_pct):
+            marker = MARK_WARN
             msg += "backend writer doing most of the work.  Consider decreasing \"bgwriter_delay\" by 50% or more to make background writer do more of the work.  "
         if maxwritten_clean > 500000:
             # for now just use a hard coded value of 500K til we understand the math about this better
+            marker = MARK_WARN
             msg += "background writer stopped cleaning scan %d times because it had written too many buffers.  Consider increasing \"bgwriter_lru_maxpages\".  " % maxwritten_clean
-        if checkpoints_timed > (checkpoints_req * 5):
-            msg += "\"checkpoint_timeout\" contributing to a lot more checkpoints (%d) than \"checkpoint_segments\" (%d).  Consider increasing \"checkpoint_timeout\".  " % (checkpoints_timed, checkpoints_req)
+        #if checkpoints_timed > (checkpoints_req * 5):
+        #    marker = MARK_WARN
+        #    msg += "\"checkpoint_timeout\" contributing to a lot more checkpoints (%d) than \"checkpoint_segments\" (%d).  Consider increasing \"checkpoint_timeout or max_wal_size\".  " % (checkpoints_timed, checkpoints_req)
+        if checkpoints_req > checkpoints_timed:
+            marker = MARK_WARN
+            msg += "\"checkpoints requested\" contributing to a lot more checkpoints (%d) than \"checkpoint timeout\" (%d).  Consider increasing \"checkpoint_segments or max_wal_size\".  " % (checkpoints_req, checkpoints_timed)            
+        if buffers_backend_fsync > 0:
+            marker = MARK_WARN
+            msg += "storage problem since fsync queue is completely filled. buffers_backend_fsync = %d." % (buffers_backend_fsync)            
+        if buffers_clean > buffers_backend:
+            marker = MARK_WARN
+            msg += "backends doing most of the cleaning. Consider increasing bgwriter_lru_multiplier and decreasing bgwriter_delay.  It could also be a problem with shared_buffers not being big enough."                        
+           
         if msg <> '':
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Checkpoint/Background/Backend Writers</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>" 
         else:
+            marker = MARK_OK
             msg = "No problems detected with checkpoint, background, or backend writers."
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Checkpoint/Background/Backend Writers</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
 
-        print msg
         if self.html_format:
             self.appendreport(html)
+        else:
+            self.appendreport(marker+msg+"\n")
+        print marker+msg            
+
 
         ########################
         # orphaned large objects
@@ -1542,18 +1663,23 @@ class maint:
             numobjects = (results.split("Would remove"))[1].split("large objects")[0]
 
         if int(numobjects) == -1:
+            marker = MARK_OK
             msg = "N/A: Unable to detect orphaned large objects on slaves."
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Orphaned Large Objects</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"             
         elif int(numobjects) == 0:
+            marker = MARK_OK
             msg = "No orphaned large objects were found."
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Orphaned Large Objects</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
         else:
+            marker = MARK_WARN
             msg = "%d orphaned large objects were found.  Consider running vacuumlo to remove them." % int(numobjects)
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Orphaned Large Objects</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                
 
-        print msg
         if self.html_format:
             self.appendreport(html)
+        else:
+            self.appendreport(marker+msg+"\n")
+        print marker+msg            
 
         ##################################
         # Check for bloated tables/indexes
@@ -1568,17 +1694,21 @@ class maint:
             return rc, errors
 
         if int(results) == 0:
+            marker = MARK_OK
             self.bloatedtables = False
             msg = "No bloated tables/indexes were found."
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Bloated Tables and/or Indexes</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"      
         else:
+            marker = MARK_WARN
             self.bloatedtables = True
-            msg = "%d bloated tables/indexes were found (See table list below)." % int(results)
+            msg = "%d bloated tables/indexes were found (See output file for details)." % int(results)
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Bloated Tables and/or Indexes</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"         
 
-        print msg
         if self.html_format:
             self.appendreport(html)
+        else:
+            self.appendreport(marker+msg+"\n")
+        print marker+msg
 
 
         ##########################
@@ -1594,17 +1724,21 @@ class maint:
             return rc, errors
 
         if int(results) == 0:
+            marker = MARK_OK
             self.unusedindexes = False
             msg = "No unused indexes were found."
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Unused Indexes</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
         else:
+            marker = MARK_WARN
             self.unusedindexes = True
-            msg = "%d unused indexes were found (See table list below)." % int(results)
+            msg = "%d unused indexes were found (See output file for details)." % int(results)
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Unused Indexes</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                        
 
-        print msg
         if self.html_format:
             self.appendreport(html)
+        else:
+            self.appendreport(marker+msg+"\n")            
+        print marker+msg            
 
 
         ####################################
@@ -1620,17 +1754,21 @@ class maint:
             return rc, errors
 
         if int(results) == 0:
+            marker = MARK_OK
             self.freezecandidates = False
             msg = "No vacuum freeze candidates were found."
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Vacuum Freeze Candidates</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"           
         else:
+            marker = MARK_WARN
             self.freezecandidates = True
-            msg = "%d vacuum freeze candidates were found (See table list below)." % int(results)
+            msg = "%d vacuum freeze candidates were found (See output file for details)." % int(results)
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Vacuum Freeze Candidates</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"              
 
-        print msg
         if self.html_format:
             self.appendreport(html)
+        else:
+            self.appendreport(marker+msg+"\n")            
+        print marker+msg
 
 
         ##############################
@@ -1646,17 +1784,21 @@ class maint:
             return rc, errors
 
         if int(results) == 0:
+            marker = MARK_OK
             self.analyzecandidates = False
             msg = "No vacuum analyze candidates were found."
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Vacuum Analyze Candidates</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"          
         else:
+            marker = MARK_WARN
             self.analyzecandidates = True
-            msg = "%d vacuum analyze candidate(s) were found (See table list below)." % int(results)
+            msg = "%d vacuum analyze candidate(s) were found (See output file for details)." % int(results)
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Vacuum Analyze Candidates</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"             
 
-        print msg
         if self.html_format:
             self.appendreport(html)
+        else:
+            self.appendreport(marker+msg+"\n")            
+        print marker+msg            
 
 
         #######################################
@@ -1693,24 +1835,29 @@ class maint:
                 return rc, errors
             standby = int(results)
             if standby < 1000:
+                marker = MARK_OK
                 msg = "Network: Relatively few network standby connections (%d)." % standby
                 html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Network Standby Connections</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"    
             else:
+                marker = MARK_WARN  
                 msg = "Network: High number of standby connections: %d.  This may indicate a lot of short-lived connections and the absence of a connection pooler." % standby
                 html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Network Standby Connections</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"       
 
-            print msg
             if self.html_format:
                 self.appendreport(html)
+            else:
+                self.appendreport(marker+msg+"\n")                
+            print marker+msg                
 
 
         ########################################
         ### end of linux only network checks ###
         ########################################
 
-        # finish special table format
-        self.appendreport("</table>")
-        self.appendreport("<p><br></p>")
+        if self.html_format:
+            # finish special table format
+            self.appendreport("</table>")
+            self.appendreport("<p><br></p>")
 
 
         return SUCCESS, ""
@@ -1718,49 +1865,14 @@ class maint:
 
     ###########################################################
     def delay(self, freeze):
-
-        while True:
-            # see if we passed work window threshold, assume minimum work windows is always 1 hour.
-            workmins = ((time.time() / 60) - self.timestartmins)
-            if workmins >= self.workwindowmins:
-                results = "Work window (%d mins.) expired (%d mins.) Program terminating before work completed." % (self.workwindowmins, workmins)
-                print results
-                return TOOLONG, results
-
-            # see if load is too high
-            rc, results = self.check_load()
-            if rc == HIGHLOAD:
-                # wait 10 minutes before trying again
-                print "deferring action (%s) for 10 minutes due to high load.  %s" % (self.action, results)
-                time.sleep(600)
-                continue
-            elif freeze:
-                # make sure we aren't getting too far behind in WALs ready to be archived.
-                rc, results = self.get_readycnt()
-                if rc <> SUCCESS:
-                    errors = "Unable to get archiving status: %d %s\n" % (rc, results)
-                    aline = "%s" % (errors)
-                    self.writeout(aline)
-                    return rc, errors
-
-                readycnt = int(results)
-                if readycnt > self.max_ready_files:
-                    print "deferring action (%s) for 10 minutes due to high load.  %s" % (self.action, results)
-                    time.sleep(600)
-                    continue
-                else:
-                    break
-            else:
-                break
-
         return SUCCESS, ""
+       
 
 ##### END OF CLASS DEFINITION
 
 #############################################################################################
 def setupOptionParser():
     parser = OptionParser(add_help_option=False, description=DESCRIPTION)
-    parser.add_option("-a", "--action",         dest="action",   help="Action to perform. Values are: ANALYZE, VACUUM_ANALYZE, VACUUM_FREEZE, REPORT",  default="",metavar="ACTION")
     parser.add_option("-h", "--dbhost",         dest="dbhost",   help="DB Host Name or IP",                     default="",metavar="DBHOST")
     parser.add_option("-p", "--port",           dest="dbport",   help="db host port",                           default="5432",metavar="DBPORT")
     parser.add_option("-u", "--dbuser",         dest="dbuser",   help="db host user",                           default="",metavar="DBUSER")
@@ -1785,7 +1897,7 @@ optionParser   = setupOptionParser()
 pg = maint()
 
 # Load and validate parameters
-rc, errors = pg.set_dbinfo(options.action, options.dbhost, options.dbport, options.dbuser, options.database, options.schema, \
+rc, errors = pg.set_dbinfo(options.dbhost, options.dbport, options.dbuser, options.database, options.schema, \
                            options.html, options.dry_run, options.verbose, sys.argv)
 if rc <> SUCCESS:
     print errors
@@ -1802,4 +1914,3 @@ if rc < SUCCESS:
 pg.cleanup()
 
 sys.exit(0)
-
