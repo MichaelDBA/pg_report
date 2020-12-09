@@ -30,7 +30,7 @@ All fields are optional except database and action. The verbose flag is only int
 <br/>
 `-p <PORT>`
 <br/>
-`-u <db user>`
+`-U <db user>`
 <br/>
 `-m [html format flag] `
 <br/>
@@ -66,4 +66,5 @@ Run report on entire test database and output to html format for web browser vie
 13. Vacuum Freeze Candidates
 14. Analyze/Vacuum Analyze candidates
 15. PG memory configuration settings
+16. Linux Kernel Memory Capacity
 
