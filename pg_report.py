@@ -1,4 +1,5 @@
 #!/usr/bin/env python2 
+#!/usr/bin/env python3 
 #!/usr/bin/env python
 #!/usr/bin/python
 ###############################################################################
@@ -33,7 +34,7 @@
 # -d <database>
 # -n <schema>
 # -p <PORT>
-# -u <db user>
+# -U <db user>
 # -m [html format flag]
 # -r [dry run flag]
 # -v [verbose output flag, mostly used for debugging]
@@ -99,6 +100,10 @@
 # Michael Vitale        10/04/2017      Fix queries based on PG versions since 9.5 (ie 9.6 and 10)
 # Michael Vitale        10/16/2020      Qualify vacuumlo command with port number. It had assumed default, 5432
 # Michael Vitale        12/08/2020      Majore rewrite: converted pg_maint health check portion to replace old pg_report that also did vacuum actions
+# Michael Vitale        12/09/2020      Added new functionality and made changes to be more compatible across Python versions 2 and 3:
+#                                       Changed "<>" to <!=>   
+#                                       Changed print "whatever" to print ("whatever") 
+#                                       still need to fix this for v3: ModuleNotFoundError: No module named 'exceptions'
 ################################################################################################################
 import string, sys, os, time, datetime, exceptions
 import tempfile, platform, math
@@ -123,7 +128,7 @@ HIGHLOAD  = 4
 DESCRIPTION="This python utility program performs a basic health check for a PostgreSQL cluster."
 VERSION    = 2.0
 PROGNAME   = "pg_report"
-ADATE      = "December 8, 2020"
+ADATE      = "December 9, 2020"
 MARK_OK    = "[ OK ]  "
 MARK_WARN  = "[WARN]  "
 
@@ -178,7 +183,11 @@ class maint:
         self.work_mem          = -1
         self.maint_work_mem    = -1
         self.eff_cache_size    = -1
+        self.shared_preload_libraries = ''
+        self.pg_type           = 'community'
 
+        self.overcommit_memory = -1
+        self.overcommit_ratio  = -1
 
     ###########################################################
     def set_dbinfo(self, dbhost, dbport, dbuser, database, schema, html_format, dry_run, verbose, argv):
@@ -215,15 +224,15 @@ class maint:
 
         # construct the connection string that will be used in all database requests
         # do not provide host name and/or port if not provided
-        if self.dbhost <> '':
+        if self.dbhost != '':
             self.connstring = " -h %s " % self.dbhost
-        if self.database <> '':
+        if self.database != '':
             self.connstring += " -d %s " % self.database
-        if self.dbport <> '':
+        if self.dbport != '':
             self.connstring += " -p %s " % self.dbport
-        if self.dbuser <> '':
+        if self.dbuser != '':
             self.connstring += " -U %s " % self.dbuser
-        if self.schema <> '':
+        if self.schema != '':
             self.schemaclause = " and n.nspname = '%s' " % self.schema
 
         if self.verbose:
@@ -241,7 +250,7 @@ class maint:
             cmd = "where psql"
 
         rc, results = self.executecmd(cmd, True)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to determine if psql is in path. rc=%d results=%s" % (rc,results)
             return rc, errors
         if 'psql' not in results:
@@ -253,27 +262,29 @@ class maint:
             self.pgbindir = results[0:pos]
 
         rc, results = self.get_configinfo()
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "rc=%d results=%s" % (rc,results)
             return rc, errors
 
         # get total memory  total memory is in bytes
         self.totalmemGB = self.get_physicalmem()
 
+        self.overcommit_memory, self.overcommit_ratio = self.get_kernelmemorycapacity()
+
         # get pg bind directory from pg_config
         rc, results = self.get_pgbindir()
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "rc=%d results=%s" % (rc,results)
             return rc, errors
 
         rc, results = self.get_pgversion()
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             return rc, results
         self.pgversion = Decimal(results)
 
         # Validate parameters
         rc, errors = self.validate_parms()
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             return rc, errors
 
         return SUCCESS, ''
@@ -293,12 +304,12 @@ class maint:
         if self.opsys == 'posix':
             cmd = "free -g | grep Mem: | /usr/bin/awk '{ total=$2; } END { print \"total=\" total  }'"
             rc, results = self.executecmd(cmd, True)
-            if rc <> SUCCESS:
+            if rc != SUCCESS:
                 errors = "unable to get Total Physical Memory.  rc=%d %s\n" % (rc, results)
                 aline = "%s" % (errors)
                 self.writeout(aline)
                 return rc, errors
-            #print "rc=%d results=%s" % (rc,results)
+            #print ("rc=%d results=%s" % (rc,results))
             results = results.split('=')
             totalmem_prettyGB = int(results[1].strip())
         else:
@@ -308,9 +319,42 @@ class maint:
             totalmem_prettyGB = mem.total / (1024*1024*1024)
 
         if self.verbose:
-            print " total physical memory: %s GB" % totalmem_prettyGB
+            print (" total physical memory: %s GB" % totalmem_prettyGB)
 
         return totalmem_prettyGB
+
+    ###########################################################
+    def get_kernelmemorycapacity(self):
+
+        overcommit_memory = -1
+        overcommit_ratio  = -1
+        if self.opsys == 'posix':
+            cmd = "cat /proc/sys/vm/overcommit_memory"
+            rc, results = self.executecmd(cmd, True)
+            if rc != SUCCESS:
+                errors = "unable to get overcommit_memory.  rc=%d %s\n" % (rc, results)
+                aline = "%s" % (errors)
+                self.writeout(aline)
+                return rc, errors
+            overcommit_memory = int(results[0].strip())
+            
+            cmd = "cat /proc/sys/vm/overcommit_ratio"
+            rc, results = self.executecmd(cmd, True)
+            if rc != SUCCESS:
+                errors = "unable to get overcommit_ratio.  rc=%d %s\n" % (rc, results)
+                aline = "%s" % (errors)
+                self.writeout(aline)
+                return rc, errors
+            overcommit_ratio = int(results.strip())
+        else:
+            # must be windows, nt
+            # and we don't do windows at the current time
+            return -1, -1
+
+        if self.verbose:
+            print ("overcommit_memory: %s  overcommit_ratio: %s" % (overcommit_memory, overcommit_ratio))
+
+        return overcommit_memory, overcommit_ratio
 
 
     ###########################################################
@@ -318,7 +362,7 @@ class maint:
         if self.connected:
             # do something here later if we enable a db driver
             self.connected = false
-        # print "deleting temp file: %s" % self.tempfile
+        # print ("deleting temp file: %s" % self.tempfile)
         try:
             os.remove(self.tempfile)
         except OSError:
@@ -363,12 +407,12 @@ class maint:
 
     ###########################################################
     def writeout(self,aline):
-        if self.fout <> '':
+        if self.fout != '':
             aline = aline + "\r\n"
             self.fout.write(aline)
         else:
             # default to standard output
-            print aline
+            print (aline)
         return
 
     ###########################################################
@@ -378,7 +422,7 @@ class maint:
 
         cmd = "psql %s -t -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             # let calling function report the error
             errors = "Unable to get config info: %d %s\nsql=%s\n" % (rc, results, sql)
             #aline = "%s" % (errors)
@@ -397,10 +441,14 @@ class maint:
             fields = aline.split('|')
             name = fields[0].strip()
             setting = fields[1].strip()
-            # print "name=%s  setting=%s" % (name, setting)
+            #print ("name=%s  setting=%s" % (name, setting))
 
             if name == 'data_directory':
                 self.datadir = setting
+                # for pg rds version, 9.6,  "show all" command does not have shared_preload_libraries! so rely on data_directory instead
+                if 'rdsdbdata' in self.datadir:
+                    self.pg_type = 'rds'                
+                
             elif name == 'archive_mode':
                 self.archive_mode = setting
             elif name == 'max_connections':
@@ -424,18 +472,26 @@ class maint:
                 # effective_cache_size in 8 kilobytes units from select from pg_settings, so convert to megabytes, but show gives user friendly form (10GB, 10MB, 10KB, etc.)
                 rc = self.convert_humanfriendly_to_MB(setting)
                 self.eff_cache_size = rc
+            elif name == 'shared_preload_libraries':
+                # we only care that it is loaded, not necessarily created
+                # for pg rds version, 9.6,  "show all" command does not have shared_preload_libraries! so rely on data_directory instead
+                self.shared_preload_libraries = setting  
+                if 'rdsutils' in self.shared_preload_libraries:
+                    self.pg_type = 'rds'
+            elif name == 'rds.extensions':
+                self.pg_type = 'rds'
 
         f.close()
 
         if self.verbose:
-            print "shared_buffers = %d  maint_work_mem = %d  work_mem = %d" % (self.shared_buffers, self.maint_work_mem, self.work_mem)
+            print ("shared_buffers = %d  maint_work_mem = %d  work_mem = %d  shared_preload_libraries = %s" % (self.shared_buffers, self.maint_work_mem, self.work_mem, self.shared_preload_libraries))
 
         return SUCCESS, results
 
     ###########################################################
     def executecmd(self, cmd, expect):
         if self.verbose:
-            print "executecmd --> %s" % cmd
+            print ("executecmd --> %s" % cmd)
 
         # NOTE: try and catch does not work for Popen
         try:
@@ -447,25 +503,25 @@ class maint:
             values, err = p.communicate()
 
         except exceptions.OSError as e:
-            print "exceptions.OSError Error",e
+            print ("exceptions.OSError Error",e)
             return ERROR, "Error(1)"
         except BaseException as e:
-            print "BaseException Error",e
+            print ("BaseException Error",e)
             return ERROR, "Error(2)"
         except OSError as e:
-            print "OSError Error", e
+            print ("OSError Error", e)
             return ERROR, "Error(3)"
         except RuntimeError as e:
-            print "RuntimeError", e
+            print ("RuntimeError", e)
             return ERROR, "Error(4)"
         except ValueError as e:
-            print "Value Error", e
+            print ("Value Error", e)
             return ERROR, "Error(5)"
         except Exception as e:
-            print "General Exception Error", e
+            print ("General Exception Error", e)
             return ERROR, "Error(6)"
         except:
-            print "Unexpected error:", sys.exc_info()[0]
+            print ("Unexpected error:", sys.exc_info()[0])
             return ERROR, "Error(7)"
 
         if err is None:
@@ -477,19 +533,19 @@ class maint:
         err    = err.strip()
         rc = p.returncode
         if self.verbose:
-            print "rc=%d  values=***%s***  errors=***%s***" % (rc, values, err)
+            print ("rc=%d  values=***%s***  errors=***%s***" % (rc, values, err))
 
         if rc == 1 or rc == 2:
             return ERROR2, err
         elif rc == 127:
             return ERROR2, err
-        elif err <> "":
+        elif err != "":
             # do nothing since INFO information is returned here for analyze commands
             # return ERROR, err
             return SUCCESS, err
         elif values == "" and expect == True:
             return ERROR2, values
-        elif rc <> SUCCESS:
+        elif rc != SUCCESS:
             # print or(stderr_data)
             return rc, err
         elif values == "" and expect:
@@ -507,7 +563,7 @@ class maint:
         cmd = "psql %s -t -c \"%s\" " % (self.connstring, sql)
 
         rc, results = self.executecmd(cmd, True)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "%s\n" % (results)
             aline = "%s" % (errors)
 
@@ -523,7 +579,11 @@ class maint:
 
     ###########################################################
     def get_readycnt(self):
-
+        
+        # we cannot handle cloud types like AWS RDS
+        if self.pg_type == 'rds':
+            return SUCCESS, '0'
+        
         # version 10 replaces pg_xlog with pg_wal directory
         if self.pgversion > 9.6:
             xlogdir = "%s/pg_wal/archive_status" % self.datadir
@@ -535,7 +595,7 @@ class maint:
         cmd = "psql %s -t -c \"%s\" " % (self.connstring, sql)
 
         rc, results = self.executecmd(cmd, True)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "%s\n" % (results)
             aline = "%s" % (errors)
 
@@ -553,7 +613,7 @@ class maint:
         cmd = "psql %s -t -c \"%s\" " % (self.connstring, sql)
 
         rc, results = self.executecmd(cmd, True)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "%s\n" % (results)
             aline = "%s" % (errors)
 
@@ -571,7 +631,7 @@ class maint:
             cmd = "pg_config | find \"BINDIR\""
 
         rc, results = self.executecmd(cmd, True)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             # don't consider failure unless bindir not already populated by "which psql" command that executed earlier
             if self.pgbindir == "":
                 errors = "unable to get PG Bind Directory.  rc=%d %s\n" % (rc, results)
@@ -585,7 +645,7 @@ class maint:
         self.pgbindir   = results[1].strip()
 
         if self.verbose:
-            print "PG Bind Directory = %s" % self.pgbindir
+            print ("PG Bind Directory = %s" % self.pgbindir)
 
         return SUCCESS, str(results)
 
@@ -595,7 +655,7 @@ class maint:
         if self.opsys == 'posix':
             cmd = "cat /proc/cpuinfo | grep processor | wc -l"
             rc, results = self.executecmd(cmd, True)
-            if rc <> SUCCESS:
+            if rc != SUCCESS:
                 errors = "%s\n" % (results)
                 aline = "%s" % (errors)
                 self.writeout(aline)
@@ -604,7 +664,7 @@ class maint:
 
             cmd = "uptime | grep -ohe 'load average[s:][: ].*' | awk '{ print $5 }'"
             rc, results = self.executecmd(cmd, True)
-            if rc <> SUCCESS:
+            if rc != SUCCESS:
                 errors = "%s\n" % (results)
                 aline = "%s" % (errors)
                 self.writeout(aline)
@@ -613,23 +673,24 @@ class maint:
 
             LOADR= round(LOAD15/CPUs * 100,2)
             if self.verbose:
-                print "LOAD15 = %.2f  CPUs=%d LOAD = %.2f%%" % (LOAD15, CPUs, LOADR)
+                print ("LOAD15 = %.2f  CPUs=%d LOAD = %.2f%%" % (LOAD15, CPUs, LOADR))
 
         else:
             # assume windows
             cmd = "wmic cpu get loadpercentage"
             rc, results = self.executecmd(cmd, True)
-            if rc <> SUCCESS:
+            if rc != SUCCESS:
                 errors = "%s\n" % (results)
                 aline = "%s" % (errors)
                 self.writeout(aline)
                 return rc, errors
             if self.verbose:
-                print "windows load: %d %s" % (rc, results)
+                print ("windows load: %d %s" % (rc, results))
             LOAD = results.split('\n')
             LOADR = int(LOAD[1])
 
         return SUCCESS, str(LOADR)
+
 
     ###########################################################
     def check_load(self):
@@ -638,7 +699,7 @@ class maint:
             return SUCCESS, ""
 
         rc, results = self.get_load()
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             return rc, results
 
         load = Decimal(results)
@@ -659,22 +720,20 @@ class maint:
         
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get table/index bloat count: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
             return rc, errors
-        print "results=%s" % results    
         cols = results.split('|')            
         self.slavecnt = int(cols[0].strip())
-        print "slaves=%d" % self.slavecnt
 
         # Also check whether this cluster is a master or slave
         # self.in_recovery
         sql = "select pg_is_in_recovery()"
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get master/slave status: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -749,51 +808,47 @@ class maint:
 
         if self.html_format:
             rc,results = self.initreport()
-            if rc <> SUCCESS:
+            if rc != SUCCESS:
                 return rc, results
 
         rc, results = self.get_slaves()
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             return rc, results
 
         # do health checks
         rc, results = self.do_report_healthchecks()
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             return rc, results
-        print ""
+        print ("")
 
         # get pg memory settings
         rc, results = self.do_report_pgmemory()
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             return rc, results
-        print ""
 
         # get bloated tables and indexes
         rc, results = self.do_report_bloated()
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             return rc, results
-        print ""
 
         # get unused indexes
         rc, results = self.do_report_unusedindexes()
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             return rc, results
-        print ""
 
         # See what tables need to be analyzed, vacuumed, etc
         rc, results = self.do_report_tablemaintenance()
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             return rc, results
-        print ""
 
         if self.html_format:
             rc,results = self.finalizereport()
-            if rc <> SUCCESS:
+            if rc != SUCCESS:
                 return rc, results
 
-            print "html report file generated: %s" % self.reportfile
+            print ("html report file generated: %s" % self.reportfile)
         else:
-            print "text report file generated: %s" % self.reportfile
+            print ("text report file generated: %s" % self.reportfile)
         
         return SUCCESS, ""
 
@@ -819,7 +874,7 @@ class maint:
         else:
             recommended_shared_buffers = percent25GB
         if self.verbose:
-            print "shared_buffers = %d percent25GB=%d  recommended=%d  totalmemGB=%d" % (self.shared_buffers, percent25GB, recommended_shared_buffers, self.totalmemGB)
+            print ("shared_buffers = %d percent25GB=%d  recommended=%d  totalmemGB=%d" % (self.shared_buffers, percent25GB, recommended_shared_buffers, self.totalmemGB))
 
         # maintenance_work_mem
         # current pg versions dont perform better with high values, since there is a hard-coded limit of the this memory that will be used,
@@ -874,8 +929,8 @@ class maint:
         recommended_effective_cache_size = .85 * self.totalmemGB
 
         totalf = "Current and recommended PG Memory configuration settings are based on a dedicated PG Server with one PG Instance. Total Physical Memory = %s GB" % self.totalmemGB
-        print totalf
-        print "*** Consider changing these values if they differ significantly ***"
+        print (totalf)
+        print ("*** Consider changing these values if they differ significantly ***")
 
         if self.html_format:
             totalf = "<H4>" + totalf + "</H4>"
@@ -885,24 +940,24 @@ class maint:
             
         effective_cache_size_f = "%04d GB" % (self.eff_cache_size  / 1024)
         recommended_effective_cache_size_f = "%04d GB" % recommended_effective_cache_size
-        print "effective_cache_size:    %s  recommended: %s" % (effective_cache_size_f, recommended_effective_cache_size_f)
+        print ("effective_cache_size:    %s  recommended: %s" % (effective_cache_size_f, recommended_effective_cache_size_f))
 
         if self.shared_buffers < 1000:
             # show in MB instead of GB
             shared_buffers_f             = "%04d MB" % self.shared_buffers
             recommended_shared_buffers_f = "%04d MB" % (recommended_shared_buffers * 1024)
-            print "shared_buffers:          %s  recommended: %s" % (shared_buffers_f, recommended_shared_buffers_f)
+            print ("shared_buffers:          %s  recommended: %s" % (shared_buffers_f, recommended_shared_buffers_f))
         else:
             shared_buffers_f             = "%04d GB" % (self.shared_buffers / 1024)
             recommended_shared_buffers_f = "%04d GB" %  recommended_shared_buffers
-            print "shared_buffers:          %s  recommended: %s" % (shared_buffers_f, recommended_shared_buffers_f)
+            print ("shared_buffers:          %s  recommended: %s" % (shared_buffers_f, recommended_shared_buffers_f))
 
         maintenance_work_mem_f              = "%04d MB" % self.maint_work_mem
         recommended_maintenance_work_mem_f  = "%04d MB" % (recommended_maintenance_work_mem * 1000)
         work_mem_f                          = "%04d MB" % self.work_mem
         recommended_work_mem_f              = "%04d MB" % (recommended_work_mem * 1000)
-        print "maintenance_work_mem:    %s  recommended: %s" % (maintenance_work_mem_f,  recommended_maintenance_work_mem_f )
-        print "work_mem:                %s  recommended: %s" % (work_mem_f, recommended_work_mem_f )
+        print ("maintenance_work_mem:    %s  recommended: %s" % (maintenance_work_mem_f,  recommended_maintenance_work_mem_f ))
+        print ("work_mem:                %s  recommended: %s" % (work_mem_f, recommended_work_mem_f ))
 
         if self.html_format:
             html = "<table border=\"1\">\n" + "<tr>" + "<th align=\"center\">field</th>\n" + "<th align=\"center\">current value</th>\n" + "<th align=\"center\">recommended value</th>\n" + "</tr>\n"
@@ -935,7 +990,7 @@ class maint:
         else:
             cmd = "psql %s -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get table/index bloat: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -952,7 +1007,7 @@ class maint:
         for line in f:
             lineno = lineno + 1
             if self.verbose:
-                print "%d line=%s" % (lineno,line)
+                print ("%d line=%s" % (lineno,line))
             aline = line.strip()
             if len(aline) < 1:
                 continue
@@ -989,7 +1044,7 @@ class maint:
         else:
             cmd = "psql %s -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get unused indexes: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1003,7 +1058,7 @@ class maint:
         # See if this cluster has dependent slaves and if so give information warning
         if self.slavecnt > 0:
             msg = "%d slave(s) are dependent on this cluster.  Make sure unused indexes are also unused on the slave(s) before considering them as index drop candidates.\n" % self.slavecnt
-            print msg
+            print (msg)
             if self.html_format:
                 msg = "<H4><p style=\"color:red;\">" + msg + "</p><H4>"
                 self.appendreport(msg)
@@ -1016,7 +1071,7 @@ class maint:
         for line in f:
             lineno = lineno + 1
             if self.verbose:
-                print "%d line=%s" % (lineno,line)
+                print ("%d line=%s" % (lineno,line))
             aline = line.strip()
             if len(aline) < 1:
                 continue
@@ -1048,7 +1103,7 @@ class maint:
             else:
                 cmd = "psql %s -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
             rc, results = self.executecmd(cmd, False)
-            if rc <> SUCCESS:
+            if rc != SUCCESS:
                 errors = "Unable to get user table stats: %d %s\ncmd=%s\n" % (rc, results, cmd)
                 aline = "%s" % (errors)
                 self.writeout(aline)
@@ -1065,7 +1120,7 @@ class maint:
             for line in f:
                 lineno = lineno + 1
                 if self.verbose:
-                    print "%d line=%s" % (lineno,line)
+                    print ("%d line=%s" % (lineno,line))
                 aline = line.strip()
                 if len(aline) < 1:
                     continue
@@ -1088,7 +1143,7 @@ class maint:
             if self.html_format:
                 self.appendreport("<p><br></p>")
 
-        print ""
+        print ("")
 
         if self.analyzecandidates == False:
             return SUCCESS, ""
@@ -1101,7 +1156,7 @@ class maint:
             cmd = "psql %s -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
             
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get user table stats: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1118,7 +1173,7 @@ class maint:
         for line in f:
             lineno = lineno + 1
             if self.verbose:
-                print "%d line=%s" % (lineno,line)
+                print ("%d line=%s" % (lineno,line))
             aline = line.strip()
             if len(aline) < 1:
                 continue
@@ -1158,9 +1213,9 @@ class maint:
             slavecnt = 0
 
         if self.verbose:
-            print "slavecnt=%d  slaves=%s" % (slavecnt, self.slaves)
+            print ("slavecnt=%d  slaves=%s" % (slavecnt, self.slaves))
         msg = "%d slave(s) were detected." % slavecnt
-        print msg
+        print (msg)
         if self.html_format:
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Number of Slaves</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
             self.appendreport(html)
@@ -1173,7 +1228,7 @@ class maint:
         sql = "SELECT blks_read, blks_hit, round((blks_hit::float/(blks_read+blks_hit+1)*100)::numeric, 2) as cachehitratio FROM pg_stat_database where datname = '%s' ORDER BY datname, cachehitratio" % self.database
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get database cache hit ratio: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1189,16 +1244,30 @@ class maint:
         elif cache_ratio < Decimal('90.0'):
             marker = MARK_WARN        
             msg = "Moderate cache hit ratio: %.2f (blocks hit vs blocks read)" % cache_ratio
-            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Cache Hit Ratio</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
+            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"red\">Cache Hit Ratio</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
         else:
             marker = MARK_OK
             msg = "High cache hit ratio: %.2f (blocks hit vs blocks read)" % cache_ratio
-            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Cache Hit Ratio</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
+            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"red\">Cache Hit Ratio</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
         if self.html_format:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")
-        print marker+msg
+        print (marker+msg)
+
+        ##########################
+        # shared_preload_libraies
+        ##########################
+        if 'pg_stat_statements' not in self.shared_preload_libraries:
+            marker = MARK_WARN
+            msg = "pg_stat_statements extension not loaded."
+            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"red\">Cache Hit Ratio</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
+        if self.html_format:
+            self.appendreport(html)
+        else:
+            self.appendreport(marker+msg+"\n")
+        print (marker+msg)
+
 
 
         ######################################################
@@ -1207,7 +1276,7 @@ class maint:
         sql = "select count(*) from pg_stat_activity"
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get count of current connections: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1216,7 +1285,7 @@ class maint:
         result = float(conns) / self.max_connections
         percentconns = int(math.floor(result * 100))
         if self.verbose:
-            print "Max connections = %d   Current connections = %d   PctConnections = %d" % (self.max_connections, conns, percentconns)
+            print ("Max connections = %d   Current connections = %d   PctConnections = %d" % (self.max_connections, conns, percentconns))
 
         if percentconns > 80:
             # 80 percent is the hard coded threshold
@@ -1231,7 +1300,7 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")            
-        print marker+msg
+        print (marker+msg)
 
 
         #######################################################################
@@ -1247,7 +1316,7 @@ class maint:
             sql = "select count(*) from pg_stat_activity where state = \'idle in transaction\' and round(EXTRACT(EPOCH FROM (now() - query_start))) > 10"
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get count of idle in transaction connections: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1266,7 +1335,7 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")
-        print marker+msg
+        print (marker+msg)
 
 
         ######################################
@@ -1282,7 +1351,7 @@ class maint:
             sql = "select count(*) from pg_stat_activity where state not ilike 'idle%' and query <> ''::text and now() - query_start > interval '5 minutes'"
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get count of long running queries: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1301,7 +1370,7 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")
-        print marker+msg
+        print (marker+msg)
 
 
         ##########################################################
@@ -1319,7 +1388,7 @@ class maint:
 
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get count of blocked queries: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1337,13 +1406,13 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")
-        print marker+msg
+        print (marker+msg)
 
         #################################
         # get archiving info if available
         #################################
         rc, results = self.get_readycnt()
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get archiving status: %d %s\n" % (rc, results)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1352,7 +1421,7 @@ class maint:
         readycnt = int(results)
 
         if self.verbose:
-            print "Ready Count = %d" % readycnt
+            print ("Ready Count = %d" % readycnt)
 
         if readycnt > 1000:
             if self.html_format:
@@ -1388,7 +1457,7 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")
-        print marker+msg
+        print (marker+msg)
 
         ###########################################################################################################################################
         # database conflicts: only applies to PG versions greater or equal to 9.1.  9.2 has additional fields of interest: deadlocks and temp_files
@@ -1397,7 +1466,7 @@ class maint:
             msg = "No database conflicts found."
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Database Conflicts</font></td><td width=\"75%\"><font color=\"blue\">N/A</font></td></tr>"
             return SUCCESS, ""
-            print msg
+            print (msg)
             if self.html_format:
                 self.appendreport(html)
             return SUCCESS, ""
@@ -1408,7 +1477,7 @@ class maint:
             sql="select datname, conflicts, deadlocks, temp_files from pg_stat_database where datname = '%s'" % self.database
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get database conflicts: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1439,7 +1508,7 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")
-        print marker+msg
+        print (marker+msg)
 
         ###############################################################################################################
         # Check for checkpoint frequency
@@ -1449,7 +1518,7 @@ class maint:
         sql = "SELECT total_checkpoints, seconds_since_start / total_checkpoints / 60 AS minutes_between_checkpoints, checkpoints_timed, checkpoints_req, checkpoint_write_time, checkpoint_sync_time FROM (SELECT EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time())) AS seconds_since_start, (checkpoints_timed+checkpoints_req) AS total_checkpoints, checkpoints_timed, checkpoints_req, checkpoint_write_time / 1000 as checkpoint_write_time, checkpoint_sync_time / 1000 as checkpoint_sync_time FROM pg_stat_bgwriter) AS sub"
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get checkpoint frequency: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1482,7 +1551,7 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")
-        print marker+msg
+        print (marker+msg)
 
         ####################################
         # Check some postgresql config parms
@@ -1490,7 +1559,7 @@ class maint:
         sql = "with summary as (select name, setting from pg_settings where name in ('autovacuum', 'checkpoint_completion_target', 'data_checksums', 'idle_in_transaction_session_timeout', 'log_checkpoints', 'log_lock_waits',  'log_min_duration_statement', 'log_temp_files', 'shared_preload_libraries', 'track_activity_query_size') order by 1 ) select setting from summary order by name"
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)        
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get configuration parameters: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1509,27 +1578,27 @@ class maint:
         shared_preload_libraries            = cols[8].strip()
         track_activity_query_size           = int(cols[9].strip())
 
-        #print "autovac=%s  chk_target=%s  sums=%s  idle=%s  log_checkpoints=%s  log_locks= %s  log_min=%s  log_temp=%s  shared=%s  track=%s" \
+        #print ("autovac=%s  chk_target=%s  sums=%s  idle=%s  log_checkpoints=%s  log_locks= %s  log_min=%s  log_temp=%s  shared=%s  track=%s" \
         #      % (autovacuum, checkpoint_completion_target, data_checksums, idle_in_transaction_session_timeout, log_checkpoints, log_lock_waits, 
-        #      log_min_duration_statement, log_temp_files, shared_preload_libraries, track_activity_query_size)
+        #      log_min_duration_statement, log_temp_files, shared_preload_libraries, track_activity_query_size))
 
         msg = ''              
-        if autovacuum <> 'on':
+        if autovacuum != 'on':
             marker = MARK_WARN
             msg = "autovacuum is turned off.  "
         if checkpoint_completion_target <= 0.6:
             marker = MARK_WARN
             msg+= "checkpoint_completion_target is less than optimal.  "            
-        if data_checksums <> 'on':
+        if data_checksums != 'on':
             marker = MARK_WARN
             msg+= "data checksums is turned off.  "
         if idle_in_transaction_session_timeout == '0':
             marker = MARK_WARN
             msg+= "idle_in_transaction_session_timeout is turned off.  "
-        if log_checkpoints <> 'on':
+        if log_checkpoints != 'on':
             marker = MARK_WARN
             msg+= "log_checkpoints is turned off.  "
-        if log_lock_waits <> 'on':
+        if log_lock_waits != 'on':
             marker = MARK_WARN
             msg+= "log_lock_waits is turned off.  "            
         if log_min_duration_statement == '-1':
@@ -1545,7 +1614,7 @@ class maint:
             marker = MARK_WARN
             msg+= "track_activity_query_size may need to be increased or log queries may be truncated.  " 
 
-        if msg <> '':
+        if msg != '':
             marker = MARK_WARN        
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Configuration Settings</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>" 
         else:
@@ -1557,7 +1626,7 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")
-        print marker+msg            
+        print (marker+msg            )
 
 
         
@@ -1568,7 +1637,7 @@ class maint:
 
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get background/backend writers: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1597,7 +1666,7 @@ class maint:
         if self.verbose:
             msg = "chkpt_time=%d chkpt_req=%d  buff_chkpt=%d  buff_clean=%d  maxwritten_clean=%d  buff_backend=%d  buff_backend_fsync=%d  buff_alloc=%d, chkpt_req_pct=%d avg_chkpnt_write=%s total_written=%s chkpnt_write_pct=%d background_write_pct=%d  backend_write_pct=%d avg_checkpoint_time=%d seconds" \
             % (checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_clean, maxwritten_clean, buffers_backend, buffers_backend_fsync, buffers_alloc, checkpoints_req_pct, avg_checkpoint_write, total_written, checkpoint_write_pct, background_write_pct, backend_write_pct, avg_checkpoint_seconds)
-            print msg
+            print (msg)
 
         msg = ''
         if buffers_backend_fsync > 0:
@@ -1610,9 +1679,6 @@ class maint:
             # for now just use a hard coded value of 500K til we understand the math about this better
             marker = MARK_WARN
             msg += "background writer stopped cleaning scan %d times because it had written too many buffers.  Consider increasing \"bgwriter_lru_maxpages\".  " % maxwritten_clean
-        #if checkpoints_timed > (checkpoints_req * 5):
-        #    marker = MARK_WARN
-        #    msg += "\"checkpoint_timeout\" contributing to a lot more checkpoints (%d) than \"checkpoint_segments\" (%d).  Consider increasing \"checkpoint_timeout or max_wal_size\".  " % (checkpoints_timed, checkpoints_req)
         if checkpoints_req > checkpoints_timed:
             marker = MARK_WARN
             msg += "\"checkpoints requested\" contributing to a lot more checkpoints (%d) than \"checkpoint timeout\" (%d).  Consider increasing \"checkpoint_segments or max_wal_size\".  " % (checkpoints_req, checkpoints_timed)            
@@ -1623,7 +1689,7 @@ class maint:
             marker = MARK_WARN
             msg += "backends doing most of the cleaning. Consider increasing bgwriter_lru_multiplier and decreasing bgwriter_delay.  It could also be a problem with shared_buffers not being big enough."                        
            
-        if msg <> '':
+        if msg != '':
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Checkpoint/Background/Backend Writers</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>" 
         else:
             marker = MARK_OK
@@ -1634,7 +1700,7 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")
-        print marker+msg            
+        print (marker+msg            )
 
 
         ########################
@@ -1648,12 +1714,14 @@ class maint:
             # v1.2 fix: always use provided port number
             if self.dbuser == '':
                 user_clause = "-p %s" % (self.dbport)
+            elif self.dbhost == '':
+                user_clause = " %s -U %s -p %s" % (self.dbuser, self.dbport)
             else:
-                user_clause = " -U %s -p %s" % (self.dbuser, self.dbport)
+                user_clause = " -h %s -U %s -p %s" % (self.dbhost, self.dbuser, self.dbport)
 
             cmd = "%s/vacuumlo -n %s %s" % (self.pgbindir, user_clause, self.database)
             rc, results = self.executecmd(cmd, False)
-            if rc <> SUCCESS:
+            if rc != SUCCESS:
                 errors = "Unable to get orphaned large objects: %d %s\ncmd=%s\n" % (rc, results, cmd)
                 aline = "%s" % (errors)
                 self.writeout(aline)
@@ -1679,7 +1747,7 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")
-        print marker+msg            
+        print (marker+msg)
 
         ##################################
         # Check for bloated tables/indexes
@@ -1687,7 +1755,7 @@ class maint:
         sql = "SELECT count(*) FROM (SELECT  schemaname, tablename, cc.reltuples, cc.relpages, bs,  CEIL((cc.reltuples*((datahdr+ma- (CASE WHEN datahdr%ma=0 THEN ma ELSE datahdr%ma END))+nullhdr2+4))/(bs-20::FLOAT)) AS otta,  COALESCE(c2.relname,'?') AS iname, COALESCE(c2.reltuples,0) AS ituples, COALESCE(c2.relpages,0) AS ipages, COALESCE(CEIL((c2.reltuples*(datahdr-12))/(bs-20::FLOAT)),0) AS iotta FROM ( SELECT   ma,bs,schemaname,tablename,   (datawidth+(hdr+ma-(CASE WHEN hdr%ma=0 THEN ma ELSE hdr%ma END)))::NUMERIC AS datahdr,   (maxfracsum*(nullhdr+ma-(CASE WHEN nullhdr%ma=0 THEN ma ELSE nullhdr%ma END))) AS nullhdr2 FROM ( SELECT schemaname, tablename, hdr, ma, bs, SUM((1-null_frac)*avg_width) AS datawidth, MAX(null_frac) AS maxfracsum,  hdr+( SELECT 1+COUNT(*)/8 FROM pg_stats s2 WHERE null_frac<>0 AND s2.schemaname = s.schemaname AND s2.tablename = s.tablename ) AS nullhdr FROM pg_stats s, ( SELECT (SELECT current_setting('block_size')::NUMERIC) AS bs, CASE WHEN SUBSTRING(v,12,3) IN ('8.0','8.1','8.2') THEN 27 ELSE 23 END AS hdr, CASE WHEN v ~ 'mingw32' THEN 8 ELSE 4 END AS ma FROM (SELECT version() AS v) AS foo ) AS constants  GROUP BY 1,2,3,4,5 ) AS foo) AS rs  JOIN pg_class cc ON cc.relname = rs.tablename  JOIN pg_namespace nn ON cc.relnamespace = nn.oid AND nn.nspname = rs.schemaname AND nn.nspname <> 'information_schema' LEFT JOIN pg_index i ON indrelid = cc.oid LEFT JOIN pg_class c2 ON c2.oid = i.indexrelid ) AS sml where ROUND((CASE WHEN otta=0 THEN 0.0 ELSE sml.relpages::FLOAT/otta END)::NUMERIC,1) > 20 OR ROUND((CASE WHEN iotta=0 OR ipages=0 THEN 0.0 ELSE ipages::FLOAT/iotta END)::NUMERIC,1) > 20 or CASE WHEN relpages < otta THEN 0 ELSE bs*(sml.relpages-otta)::BIGINT END > 10737418240 OR CASE WHEN ipages < iotta THEN 0 ELSE bs*(ipages-iotta) END > 10737418240"
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get table/index bloat count: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1708,7 +1776,7 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")
-        print marker+msg
+        print (marker+msg)
 
 
         ##########################
@@ -1717,7 +1785,7 @@ class maint:
         sql="SELECT count(*) FROM pg_stat_user_indexes JOIN pg_index USING(indexrelid) WHERE idx_scan = 0 AND idx_tup_read = 0 AND idx_tup_fetch = 0 AND NOT indisprimary AND NOT indisunique AND NOT indisexclusion AND indisvalid AND indisready AND pg_relation_size(indexrelid) > 8192"
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get unused indexes count: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1738,7 +1806,7 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")            
-        print marker+msg            
+        print (marker+msg)
 
 
         ####################################
@@ -1747,7 +1815,7 @@ class maint:
         sql="WITH settings AS (select s.setting from pg_settings s where s.name = 'autovacuum_freeze_max_age') select count(c.*) from settings s, pg_class c, pg_namespace n WHERE n.oid = c.relnamespace and c.relkind = 'r' and pg_table_size(c.oid) > 1073741824 and round((age(c.relfrozenxid)::float / s.setting::float) * 100) > 50"
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get vacuum freeze candidate count: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1768,7 +1836,7 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")            
-        print marker+msg
+        print (marker+msg)
 
 
         ##############################
@@ -1777,7 +1845,7 @@ class maint:
         sql="select count(*) from pg_namespace n, pg_class c, pg_tables t, pg_stat_user_tables u where c.relnamespace = n.oid and n.nspname = t.schemaname and t.tablename = c.relname and t.schemaname = u.schemaname and t.tablename = u.relname and n.nspname not in ('information_schema','pg_catalog') and (((c.reltuples > 0 and round((u.n_live_tup::float / c.reltuples::float) * 100) < 50)) OR ((last_vacuum is null and last_autovacuum is null and last_analyze is null and last_autoanalyze is null ) or (now()::date  - last_vacuum::date > 60 AND now()::date - last_autovacuum::date > 60 AND now()::date  - last_analyze::date > 60 AND now()::date  - last_autoanalyze::date > 60)))"
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
-        if rc <> SUCCESS:
+        if rc != SUCCESS:
             errors = "Unable to get vacuum analyze candidate count: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
@@ -1798,13 +1866,13 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")            
-        print marker+msg            
+        print (marker+msg)
 
 
-        #######################################
-        # network health checks begin here
+        #############################################
+        # kernel and network health checks begin here
         # ONLY applies to linux at current time
-        #######################################
+        #############################################
 
         if self.opsys == 'posix':
 
@@ -1828,7 +1896,7 @@ class maint:
 
             cmd =  "ss -an state time-wait | wc -l"
             rc, results = self.executecmd(cmd, False)
-            if rc <> SUCCESS:
+            if rc != SUCCESS:
                 errors = "Unable to get network standby connections count: %d %s\nsql=%s\n" % (rc, results, sql)
                 aline = "%s" % (errors)
                 self.writeout(aline)
@@ -1847,7 +1915,38 @@ class maint:
                 self.appendreport(html)
             else:
                 self.appendreport(marker+msg+"\n")                
-            print marker+msg                
+            print (marker+msg)
+
+            msg = ''
+            if self.overcommit_memory == 0:
+                marker = MARK_WARN              
+                msg = "Kernel memory overcommitment is currently allowed (default setting: 0).  The OOM Killer may kill at least one of the PostgreSQL processes, which may lead to data corruption."
+                html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Kernel Memory Capacity</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                       
+            else:
+                marker = MARK_OK
+                msg = "Kernel Memory Capacity: OOM Killer is disabled (%d)." % self.overcommit_memory
+                html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Kernel Memory Capacity</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"                
+            
+            if self.html_format:
+                self.appendreport(html)
+            else:
+                self.appendreport(marker+msg+"\n")                
+            print (marker+msg)
+
+            if self.overcommit_ratio <= 50:
+                marker = MARK_WARN              
+                msg = "Kernel memory overcommit ratio is too low (%d). Consider increasing to 70 or higher." % self.overcommit_ratio
+                html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Kernel Memory Capacity</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                       
+            else:
+                marker = MARK_OK
+                msg = "Kernel Memory Capacity: overcommit ratio is OK (%d)." % self.overcommit_memory
+                html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Kernel Memory Capacity</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"                
+            
+            if self.html_format:
+                self.appendreport(html)
+            else:
+                self.appendreport(marker+msg+"\n")                
+            print (marker+msg)
 
 
         ########################################
@@ -1875,7 +1974,7 @@ def setupOptionParser():
     parser = OptionParser(add_help_option=False, description=DESCRIPTION)
     parser.add_option("-h", "--dbhost",         dest="dbhost",   help="DB Host Name or IP",                     default="",metavar="DBHOST")
     parser.add_option("-p", "--port",           dest="dbport",   help="db host port",                           default="5432",metavar="DBPORT")
-    parser.add_option("-u", "--dbuser",         dest="dbuser",   help="db host user",                           default="",metavar="DBUSER")
+    parser.add_option("-U", "--dbuser",         dest="dbuser",   help="db host user",                           default="",metavar="DBUSER")
     parser.add_option("-d", "--database",       dest="database", help="database name",                          default="",metavar="DATABASE")
     parser.add_option("-n", "--schema",         dest="schema", help="schema name",                              default="",metavar="SCHEMA")
     parser.add_option("-m", "--html",           dest="html", help="html report format",                         default=False, action="store_true")
@@ -1899,12 +1998,14 @@ pg = maint()
 # Load and validate parameters
 rc, errors = pg.set_dbinfo(options.dbhost, options.dbport, options.dbuser, options.database, options.schema, \
                            options.html, options.dry_run, options.verbose, sys.argv)
-if rc <> SUCCESS:
-    print errors
+if rc != SUCCESS:
+    print (errors)
     optionParser.print_help()
     sys.exit(1)
 
-print "%s  version: %.1f  %s      PG Version: %s    PG Database: %s\n\n" % (PROGNAME, VERSION, ADATE, pg.pgversion, pg.database)
+print ("%s  version: %.1f  %s      PG Version: %s    PG Database: %s\n\n" % (PROGNAME, VERSION, ADATE, pg.pgversion, pg.database))
+#print ("globals=%s" % globals())
+#print ("locals=%s" % locals())
 
 rc, results = pg.do_report()
 if rc < SUCCESS:
