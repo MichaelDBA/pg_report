@@ -11,7 +11,7 @@ Bugs can be reported @ michaeldba@sqlexec.com
 It checks for load, bloat, long queries, blocked queries
 
 ## Requirements
-1. python 2.6 or 2.7
+1. python 2.6 or higher
 2. python packages: python-psutil, psycopg2
 3. psql client 
 3. psutil for windows only: https://pypi.python.org/pypi?:action=display&name=psutil#downloads
