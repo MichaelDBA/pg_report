@@ -5,7 +5,7 @@
 ###############################################################################
 ### COPYRIGHT NOTICE FOLLOWS.  DO NOT REMOVE
 ###############################################################################
-### Copyright (c) 2016 - 2021 SQLEXEC LLC
+### Copyright (c) 2016 - 2020 SQLEXEC LLC
 ###
 ### Permission to use, copy, modify, and distribute this software and its
 ### documentation for any purpose, without fee, and without a written agreement
@@ -1879,10 +1879,11 @@ class maint:
 
         #############################################
         # kernel and network health checks begin here
-        # ONLY applies to linux at current time
+        # ONLY applies to linux at current time and 
+        # only if localhost or 127.0.0.1 provided
         #############################################
 
-        if self.opsys == 'posix':
+        if self.opsys == 'posix' and (self.dbhost == 'localhost' or self.dbhost == '127.0.0.1'):
 
 
             # Check for high number of standby connections, i.e., TIME_WAIT states
@@ -2024,4 +2025,3 @@ if rc < SUCCESS:
 pg.cleanup()
 
 sys.exit(0)
-
