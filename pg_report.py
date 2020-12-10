@@ -5,7 +5,7 @@
 ###############################################################################
 ### COPYRIGHT NOTICE FOLLOWS.  DO NOT REMOVE
 ###############################################################################
-### Copyright (c) 2016 - 2020 SQLEXEC LLC
+### Copyright (c) 2016 - 2021 SQLEXEC LLC
 ###
 ### Permission to use, copy, modify, and distribute this software and its
 ### documentation for any purpose, without fee, and without a written agreement
@@ -81,31 +81,33 @@
 #
 #
 # History:
-# who did it            Date            did what
-# ==========            =========       ==============================
-# Michael Vitale        01/12/2016      Original coding using python 2.7.x on windows 8.1 and ubuntu 14.04 (pg 9.4)
-# Michael Vitale        01/13/2016      Finished porting code from bash script, pg_refreshstats.sh
-# Michael Vitale        01/14/2016      First crack at incorporated logic for report action.
-# Michael Vitale        01/17/2016      Implemented report output in html
-# Michael Vitale        01/18/2016      Fixed a bunch of bugs with html reporting
-# Michael Vitale        01/20/2016      Removed linux dependency on psutils module.
-#                                       Enhanced unused indexes report to query slaves if available
-# Michael Vitale        01/21/2016      Fixed bugs, normalized html output, added connection and locking report
-# Michael Vitale        01/23/2016      Reworked html output to display health check at top of page and lists at the bottom.
-# Michael Vitale        01/25/2016      Added more health check items: writers, network standbys.  Implemented logic related to
-#                                       checkpoint, background and backend writers and the pg_stat_bgwriter table.
-# Michael Vitale        01/27/2016      loop over tables being worked on, instead of executing
-#                                       them in batch: analyze, vacuum analyze, and vacuum freeze actions.
-# Michael Vitale        01/28/2016      Fixed python piping to use bash as default shell
-# Michael Vitale        10/04/2017      Fix queries based on PG versions since 9.5 (ie 9.6 and 10)
-# Michael Vitale        10/16/2020      Qualify vacuumlo command with port number. It had assumed default, 5432
-# Michael Vitale        12/08/2020      Majore rewrite: converted pg_maint health check portion to replace old pg_report that also did vacuum actions
-# Michael Vitale        12/09/2020      Added new functionality and made changes to be more compatible across Python versions 2 and 3:
-#                                       Changed "<>" to <!=>   
-#                                       Changed print "whatever" to print ("whatever") 
-#                                       still need to fix this for v3: ModuleNotFoundError: No module named 'exceptions'
+# who did it         Date           did what
+# ==========         =========      ==============================
+# Michael Vitale     01/12/2016     Original coding using python 2.7.x on windows 8.1 and ubuntu 14.04 (pg 9.4)
+# Michael Vitale     01/13/2016     Finished porting code from bash script, pg_refreshstats.sh
+# Michael Vitale     01/14/2016     First crack at incorporated logic for report action.
+# Michael Vitale     01/17/2016     Implemented report output in html
+# Michael Vitale     01/18/2016     Fixed a bunch of bugs with html reporting
+# Michael Vitale     01/20/2016     Removed linux dependency on psutils module.
+#                                   Enhanced unused indexes report to query slaves if available
+# Michael Vitale     01/21/2016     Fixed bugs, normalized html output, added connection and locking report
+# Michael Vitale     01/23/2016     Reworked html output to display health check at top of page and lists at the bottom.
+# Michael Vitale     01/25/2016     Added more health check items: writers, network standbys.  Implemented logic related to
+#                                   checkpoint, background and backend writers and the pg_stat_bgwriter table.
+# Michael Vitale     01/27/2016     loop over tables being worked on, instead of executing
+#                                   them in batch: analyze, vacuum analyze, and vacuum freeze actions.
+# Michael Vitale     01/28/2016     Fixed python piping to use bash as default shell
+# Michael Vitale     10/04/2017     Fix queries based on PG versions since 9.5 (ie 9.6 and 10)
+# Michael Vitale     10/16/2020     Qualify vacuumlo command with port number. It had assumed default, 5432
+# Michael Vitale     12/08/2020     Majore rewrite: converted pg_maint health check portion to replace old pg_report that also did vacuum actions
+# Michael Vitale     12/09/2020     Added new functionality and made changes to be more compatible across Python versions 2 and 3:
+#                                   Changed "<>" to <!=>   
+#                                   Changed print "whatever" to print ("whatever") 
+#                                   Removed Psycopg2 exception handling and replaced with general one.
+#                                   shell command can return an empty byte string in python3--> b'', so check for that as well.
+#
 ################################################################################################################
-import string, sys, os, time, datetime, exceptions
+import string, sys, os, time, datetime
 import tempfile, platform, math
 from decimal import *
 import smtplib
@@ -128,7 +130,7 @@ HIGHLOAD  = 4
 DESCRIPTION="This python utility program performs a basic health check for a PostgreSQL cluster."
 VERSION    = 2.0
 PROGNAME   = "pg_report"
-ADATE      = "December 9, 2020"
+ADATE      = "December 10, 2020"
 MARK_OK    = "[ OK ]  "
 MARK_WARN  = "[WARN]  "
 
@@ -248,7 +250,6 @@ class maint:
         else:
             # assume windows
             cmd = "where psql"
-
         rc, results = self.executecmd(cmd, True)
         if rc != SUCCESS:
             errors = "Unable to determine if psql is in path. rc=%d results=%s" % (rc,results)
@@ -500,7 +501,7 @@ class maint:
                 p = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE, executable="/bin/bash")
             else:
                 p = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE)
-            values, err = p.communicate()
+            values2, err2 = p.communicate()
 
         except exceptions.OSError as e:
             print ("exceptions.OSError Error",e)
@@ -524,13 +525,20 @@ class maint:
             print ("Unexpected error:", sys.exc_info()[0])
             return ERROR, "Error(7)"
 
-        if err is None:
+        if err2 is None or len(err2) == 0:
             err = ""
-        if values is None:
+        else:
+            # python 3 returns values and err in byte format so convert accordingly
+            err = bytes(err2).decode('utf-8')
+            
+        if values2 is None or len(values2) == 0:
             values = ""
+        else:
+            # python 3 returns values and err in byte format so convert accordingly
+            values = bytes(values2).decode('utf-8')
 
         values = values.strip()
-        err    = err.strip()
+                
         rc = p.returncode
         if self.verbose:
             print ("rc=%d  values=***%s***  errors=***%s***" % (rc, values, err))
@@ -2003,7 +2011,8 @@ if rc != SUCCESS:
     optionParser.print_help()
     sys.exit(1)
 
-print ("%s  version: %.1f  %s      PG Version: %s    PG Database: %s\n\n" % (PROGNAME, VERSION, ADATE, pg.pgversion, pg.database))
+print ("%s  version: %.1f  %s     Python Version: %d     PG Version: %s     PG Database: %s\n\n" % (PROGNAME, VERSION, ADATE, sys.version_info[0], pg.pgversion, pg.database))
+
 #print ("globals=%s" % globals())
 #print ("locals=%s" % locals())
 
@@ -2015,3 +2024,4 @@ if rc < SUCCESS:
 pg.cleanup()
 
 sys.exit(0)
+
