@@ -1,7 +1,7 @@
 # pg_report
 This python program does a general health check on a specific PostgreSQL cluster.
 
-(c) 2016-2020 SQLEXEC LLC
+(c) 2016-2021 SQLEXEC LLC
 <br/>
 GNU V3 and MIT licenses are conveyed accordingly.
 <br/>
