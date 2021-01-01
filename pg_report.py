@@ -5,7 +5,7 @@
 ###############################################################################
 ### COPYRIGHT NOTICE FOLLOWS.  DO NOT REMOVE
 ###############################################################################
-### Copyright (c) 2016 - 2020 SQLEXEC LLC
+### Copyright (c) 2016 - 2021 SQLEXEC LLC
 ###
 ### Permission to use, copy, modify, and distribute this software and its
 ### documentation for any purpose, without fee, and without a written agreement
@@ -105,6 +105,9 @@
 #                                   Changed print "whatever" to print ("whatever") 
 #                                   Removed Psycopg2 exception handling and replaced with general one.
 #                                   shell command can return an empty byte string in python3--> b'', so check for that as well.
+# Michael Vitale     01/01/2021     v2.1 new features: Connection time avg
+#                                   v2.1 changes:  store major and minor pg versions, not just major version for new logic coming
+#                                   v2.1 fixes: Fixed check against 9.6 version for wal directoy location.
 #
 ################################################################################################################
 import string, sys, os, time, datetime
@@ -128,9 +131,9 @@ NOTICE    = 2
 TOOLONG   = 3
 HIGHLOAD  = 4
 DESCRIPTION="This python utility program performs a basic health check for a PostgreSQL cluster."
-VERSION    = 2.0
+VERSION    = 2.1
 PROGNAME   = "pg_report"
-ADATE      = "December 10, 2020"
+ADATE      = "January 1, 2021"
 MARK_OK    = "[ OK ]  "
 MARK_WARN  = "[WARN]  "
 
@@ -163,7 +166,8 @@ class maint:
         self.dir_delim         = ''
         self.totalmemGB        = -1
         self.pgbindir          = ''
-        self.pgversion         = Decimal('0.0')
+        self.pgversionmajor    = Decimal('0.0')
+        self.pgversionminor    = '0.0'        
         self.html_format       = False
         self.programdir        = ''
         self.imageURL          = "https://cloud.githubusercontent.com/assets/12436545/12725212/7a1a27be-c8df-11e5-88a6-4e6a88004daa.jpg"
@@ -281,7 +285,6 @@ class maint:
         rc, results = self.get_pgversion()
         if rc != SUCCESS:
             return rc, results
-        self.pgversion = Decimal(results)
 
         # Validate parameters
         rc, errors = self.validate_parms()
@@ -565,8 +568,11 @@ class maint:
     ###########################################################
     def get_pgversion(self):
 
-        sql = "select substring(foo.version from 12 for 3) from (select version() as version) foo"
-
+        # v 2.1 fix: expected output --> 10.15-10.
+        #sql = "select substring(foo.version from 12 for 3) from (select version() as major) foo, substring(version(), 12, position(' ' in substring(version(),12))) as minor"
+        #sql = "select substring(version(), 12, position(' ' in substring(version(),12)))"
+        sql = "select  trim(substring(version(), 12, position(' ' in substring(version(),12)))) || '-' || substring(foo.major from 12 for 3)as major  from (select version() as major) foo"
+        
         # do not provide host name and/or port if not provided
         cmd = "psql %s -t -c \"%s\" " % (self.connstring, sql)
 
@@ -579,10 +585,21 @@ class maint:
             return rc, errors
 
         # with version 10, major version format changes from x.x to x, where x is a 2 byte integer, ie, 10, 11, etc.
-        pos = results.find('.')
+        # values = bytes(values2).decode('utf-8')
+        results = str(results)
+        parsed = results.split('-')
+        
+        amajor = parsed[1]
+        self.pgversionminor = parsed[0]
+        
+        pos = amajor.find('.')
         if pos == -1:
             # must be a beta or rc candidate version starting at version 10 since the current version is 10rc1
-            results =  results[:2]
+            self.pgversionmajor =  Decimal(amajor[:2])
+        else:
+            self.pgversionmajor = Decimal(amajor)
+        
+        # print "majorversion = %.1f  minorversion = %s" % (self.pgversionmajor, self.pgversionminor)            
         return SUCCESS, str(results)
 
     ###########################################################
@@ -593,10 +610,11 @@ class maint:
             return SUCCESS, '0'
         
         # version 10 replaces pg_xlog with pg_wal directory
-        if self.pgversion > 9.6:
-            xlogdir = "%s/pg_wal/archive_status" % self.datadir
+        if self.pgversionmajor > Decimal('9.6'):
+            xlogdir = "%s/pg_wal/archive_status" % self.datadir                
         else:
-            xlogdir = "%s/pg_xlog/archive_status" % self.datadir
+            xlogdir = "%s/pg_xlog/archive_status" % self.datadir        
+        
         sql = "select count(*) from (select pg_ls_dir from pg_ls_dir('%s') where pg_ls_dir ~ E'^[0-9A-F]{24}.ready$') as foo" % xlogdir
 
         # do not provide host name and/or port if not provided
@@ -720,7 +738,7 @@ class maint:
     ###########################################################
     def get_slaves(self):
 
-        if self.pgversion < Decimal('9.1'):
+        if self.pgversionmajor < Decimal('9.1'):
             # pg_stat_replication table does not exist
             return SUCCESS, ""
 
@@ -867,7 +885,7 @@ class maint:
         # primitive logic: make shared buffers minimum 4GB or maximum 250GB or 25% of total memory
         # newer versions of PG seem to be more efficient with higher values, so logic is:
         # if pg 9.3 or lower max is 8GB, if pg 9.4 or higher 12 GB max
-        if self.pgversion < Decimal('9.3'):
+        if self.pgversionmajor < Decimal('9.3'):
            MAXGB = 8
         else:
            MAXGB = 250
@@ -1316,7 +1334,7 @@ class maint:
         #######################################################################
         # NOTE: 9.1 uses procpid, current_query, and no state column, but 9.2+ uses pid, query and state columns respectively.  Also idle is <IDLE> in current_query for 9.1 and less
         #       <IDLE> in transaction for 9.1 but idle in transaction for state column in 9.2+
-        if self.pgversion < Decimal('9.2'):
+        if self.pgversionmajor < Decimal('9.2'):
             # select substring(current_query,1,50), round(EXTRACT(EPOCH FROM (now() - query_start))), now(), query_start  from pg_stat_activity;
             sql = "select count(*) from pg_stat_activity where current_query ilike \'<IDLE> in transaction%\' and round(EXTRACT(EPOCH FROM (now() - query_start))) > 10"
         else:
@@ -1351,7 +1369,7 @@ class maint:
         ######################################
         # NOTE: 9.1 uses procpid, current_query, and no state column, but 9.2+ uses pid, query and state columns respectively.  Also idle is <IDLE> in current_query for 9.1 and less
         #       <IDLE> in transaction for 9.1 but idle in transaction for state column in 9.2+
-        if self.pgversion < Decimal('9.2'):
+        if self.pgversionmajor < Decimal('9.2'):
             # select procpid,datname,usename, client_addr, now(), query_start, substring(current_query,1,100), now() - query_start as duration from pg_stat_activity where current_query not ilike '<IDLE%' and current_query <> ''::text and now() - query_start > interval '5 minutes';
             sql = "select count(*) from pg_stat_activity where current_query not ilike '<IDLE%' and current_query <> ''::text and now() - query_start > interval '5 minutes'"
         else:
@@ -1384,10 +1402,10 @@ class maint:
         ##########################################################
         # Get lock waiting transactions where wait is > 30 seconds
         ##########################################################
-        if self.pgversion < Decimal('9.2'):
+        if self.pgversionmajor < Decimal('9.2'):
           # select procpid, datname, usename, client_addr, now(), query_start, substring(current_query,1,100), now() - query_start as duration from pg_stat_activity where waiting is true and now() - query_start > interval '30 seconds';
             sql = "select count(*) from pg_stat_activity where waiting is true and now() - query_start > interval '30 seconds'"
-        elif self.pgversion < Decimal('9.6'):
+        elif self.pgversionmajor < Decimal('9.6'):
           # select pid, datname, usename, client_addr, now(), query_start, substring(query,1,100), now() - query_start as duration from pg_stat_activity where waiting is true and now() - query_start > interval '30 seconds';
             sql = "select count(*) from pg_stat_activity where waiting is true and now() - query_start > interval '30 seconds'"
         else:
@@ -1470,7 +1488,7 @@ class maint:
         ###########################################################################################################################################
         # database conflicts: only applies to PG versions greater or equal to 9.1.  9.2 has additional fields of interest: deadlocks and temp_files
         ###########################################################################################################################################
-        if self.pgversion < Decimal('9.1'):
+        if self.pgversionmajor < Decimal('9.1'):
             msg = "No database conflicts found."
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Database Conflicts</font></td><td width=\"75%\"><font color=\"blue\">N/A</font></td></tr>"
             return SUCCESS, ""
@@ -1479,7 +1497,7 @@ class maint:
                 self.appendreport(html)
             return SUCCESS, ""
 
-        if self.pgversion < Decimal('9.2'):
+        if self.pgversionmajor < Decimal('9.2'):
             sql="select datname, conflicts from pg_stat_database where datname = '%s'" % self.database
         else:
             sql="select datname, conflicts, deadlocks, temp_files from pg_stat_database where datname = '%s'" % self.database
@@ -1593,28 +1611,28 @@ class maint:
         msg = ''              
         if autovacuum != 'on':
             marker = MARK_WARN
-            msg = "autovacuum is turned off.  "
+            msg = "autovacuum is off.  "
         if checkpoint_completion_target <= 0.6:
             marker = MARK_WARN
             msg+= "checkpoint_completion_target is less than optimal.  "            
         if data_checksums != 'on':
             marker = MARK_WARN
-            msg+= "data checksums is turned off.  "
+            msg+= "data checksums is off.  "
         if idle_in_transaction_session_timeout == '0':
             marker = MARK_WARN
             msg+= "idle_in_transaction_session_timeout is turned off.  "
         if log_checkpoints != 'on':
             marker = MARK_WARN
-            msg+= "log_checkpoints is turned off.  "
+            msg+= "log_checkpoints is off.  "
         if log_lock_waits != 'on':
             marker = MARK_WARN
-            msg+= "log_lock_waits is turned off.  "            
+            msg+= "log_lock_waits is off.  "            
         if log_min_duration_statement == '-1':
             marker = MARK_WARN
-            msg+= "log_min_duration_statement is turned off.  "
+            msg+= "log_min_duration_statement is off.  "
         if log_temp_files == '-1':
             marker = MARK_WARN
-            msg+= "log_temp_files is turned off.  "             
+            msg+= "log_temp_files is off.  "             
         if 'pg_stat_statements' not in shared_preload_libraries:
             marker = MARK_WARN
             msg+= "pg_stat_statements extension is not loaded.  "
@@ -1634,81 +1652,102 @@ class maint:
             self.appendreport(html)
         else:
             self.appendreport(marker+msg+"\n")
-        print (marker+msg            )
+
+        print (marker+msg)
 
 
         
         ############################################################
         # Check checkpoints, background writers, and backend writers
         ############################################################
-        sql = "select checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_clean, maxwritten_clean, buffers_backend, buffers_backend_fsync, buffers_alloc, checkpoint_write_time / 1000 as checkpoint_write_time, checkpoint_sync_time / 1000 as checkpoint_sync_time, (100 * checkpoints_req) / (checkpoints_timed + checkpoints_req) AS checkpoints_req_pct,    pg_size_pretty(buffers_checkpoint * block_size / (checkpoints_timed + checkpoints_req)) AS avg_checkpoint_write,  pg_size_pretty(block_size * (buffers_checkpoint + buffers_clean + buffers_backend)) AS total_written,  100 * buffers_checkpoint / (buffers_checkpoint + buffers_clean + buffers_backend) AS checkpoint_write_pct,    100 * buffers_clean / (buffers_checkpoint + buffers_clean + buffers_backend) AS background_write_pct, 100 * buffers_backend / (buffers_checkpoint + buffers_clean + buffers_backend) AS backend_write_pct from pg_stat_bgwriter, (SELECT cast(current_setting('block_size') AS integer) AS block_size) bs"
-
+        # v2.1 fix: divident could be zero and cause division by zero error, so check first.
+        sql = "select buffers_checkpoint + buffers_checkpoint + buffers_clean + buffers_backend as buffers from pg_stat_bgwriter"
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
-            errors = "Unable to get background/backend writers: %d %s\nsql=%s\n" % (rc, results, sql)
+            errors = "Unable to get background/backend buffers count: %d %s\nsql=%s\n" % (rc, results, sql)
             aline = "%s" % (errors)
             self.writeout(aline)
-            return rc, errors
-        cols = results.split('|')
-        checkpoints_timed     = int(cols[0].strip())
-        checkpoints_req       = int(cols[1].strip())
-        buffers_checkpoint    = int(cols[2].strip())
-        buffers_clean         = int(cols[3].strip())
-        maxwritten_clean      = int(cols[4].strip())
-        buffers_backend       = int(cols[5].strip())
-        buffers_backend_fsync = int(cols[6].strip())
-        buffers_alloc         = int(cols[7].strip())
-        checkpoint_write_time = int(float(cols[8].strip()))
-        checkpoint_sync_time  = int(float(cols[9].strip()))
-        checkpoints_req_pct   = int(cols[10].strip())
-        avg_checkpoint_write  = cols[11].strip()
-        total_written         = cols[12].strip()
-        checkpoint_write_pct  = int(cols[13].strip())
-        background_write_pct  = int(cols[14].strip())
-        backend_write_pct     = int(cols[15].strip())
+            return rc, errors        
 
-        # calculate average checkpoint time
-        avg_checkpoint_seconds = ((checkpoint_write_time + checkpoint_sync_time) / (checkpoints_timed + checkpoints_req))
+        if int(results) == 0:
+            marker = MARK_WARN
+            msg = "No buffers to check for checkpoint, background, or backend writers."
+            html = "<tr><td width=\"5%\"><font color=\"red\">&#10004;</font></td><td width=\"20%\"><font color=\"red\">Checkpoint/Background/Backend Writers</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
+            if self.html_format:
+                self.appendreport(html)
+            else:
+                self.appendreport(marker+msg+"\n")
+            print (marker+msg)
+        else:            
+            sql = "select checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_clean, maxwritten_clean, buffers_backend, buffers_backend_fsync, buffers_alloc, checkpoint_write_time / 1000 as checkpoint_write_time, checkpoint_sync_time / 1000 as checkpoint_sync_time, (100 * checkpoints_req) / (checkpoints_timed + checkpoints_req) AS checkpoints_req_pct,    pg_size_pretty(buffers_checkpoint * block_size / (checkpoints_timed + checkpoints_req)) AS avg_checkpoint_write,  pg_size_pretty(block_size * (buffers_checkpoint + buffers_clean + buffers_backend)) AS total_written,  100 * buffers_checkpoint / (buffers_checkpoint + buffers_clean + buffers_backend) AS checkpoint_write_pct,    100 * buffers_clean / (buffers_checkpoint + buffers_clean + buffers_backend) AS background_write_pct, 100 * buffers_backend / (buffers_checkpoint + buffers_clean + buffers_backend) AS backend_write_pct from pg_stat_bgwriter, (SELECT cast(current_setting('block_size') AS integer) AS block_size) bs"
 
-        if self.verbose:
-            msg = "chkpt_time=%d chkpt_req=%d  buff_chkpt=%d  buff_clean=%d  maxwritten_clean=%d  buff_backend=%d  buff_backend_fsync=%d  buff_alloc=%d, chkpt_req_pct=%d avg_chkpnt_write=%s total_written=%s chkpnt_write_pct=%d background_write_pct=%d  backend_write_pct=%d avg_checkpoint_time=%d seconds" \
-            % (checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_clean, maxwritten_clean, buffers_backend, buffers_backend_fsync, buffers_alloc, checkpoints_req_pct, avg_checkpoint_write, total_written, checkpoint_write_pct, background_write_pct, backend_write_pct, avg_checkpoint_seconds)
-            print (msg)
+            cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+            rc, results = self.executecmd(cmd, False)
+            if rc != SUCCESS:
+                errors = "Unable to get background/backend writers: %d %s\nsql=%s\n" % (rc, results, sql)
+                aline = "%s" % (errors)
+                self.writeout(aline)
+                return rc, errors
+            cols = results.split('|')
+            checkpoints_timed     = int(cols[0].strip())
+            checkpoints_req       = int(cols[1].strip())
+            buffers_checkpoint    = int(cols[2].strip())
+            buffers_clean         = int(cols[3].strip())
+            maxwritten_clean      = int(cols[4].strip())
+            buffers_backend       = int(cols[5].strip())
+            buffers_backend_fsync = int(cols[6].strip())
+            buffers_alloc         = int(cols[7].strip())
+            checkpoint_write_time = int(float(cols[8].strip()))
+            checkpoint_sync_time  = int(float(cols[9].strip()))
+            checkpoints_req_pct   = int(cols[10].strip())
+            avg_checkpoint_write  = cols[11].strip()
+            total_written         = cols[12].strip()
+            checkpoint_write_pct  = int(cols[13].strip())
+            background_write_pct  = int(cols[14].strip())
+            backend_write_pct     = int(cols[15].strip())
 
-        msg = ''
-        if buffers_backend_fsync > 0:
-            marker = MARK_WARN
-            msg = "bgwriter fsync request queue is full. Backend using fsync.  "
-        if backend_write_pct > (checkpoint_write_pct + background_write_pct):
-            marker = MARK_WARN
-            msg += "backend writer doing most of the work.  Consider decreasing \"bgwriter_delay\" by 50% or more to make background writer do more of the work.  "
-        if maxwritten_clean > 500000:
-            # for now just use a hard coded value of 500K til we understand the math about this better
-            marker = MARK_WARN
-            msg += "background writer stopped cleaning scan %d times because it had written too many buffers.  Consider increasing \"bgwriter_lru_maxpages\".  " % maxwritten_clean
-        if checkpoints_req > checkpoints_timed:
-            marker = MARK_WARN
-            msg += "\"checkpoints requested\" contributing to a lot more checkpoints (%d) than \"checkpoint timeout\" (%d).  Consider increasing \"checkpoint_segments or max_wal_size\".  " % (checkpoints_req, checkpoints_timed)            
-        if buffers_backend_fsync > 0:
-            marker = MARK_WARN
-            msg += "storage problem since fsync queue is completely filled. buffers_backend_fsync = %d." % (buffers_backend_fsync)            
-        if buffers_clean > buffers_backend:
-            marker = MARK_WARN
-            msg += "backends doing most of the cleaning. Consider increasing bgwriter_lru_multiplier and decreasing bgwriter_delay.  It could also be a problem with shared_buffers not being big enough."                        
+            # calculate average checkpoint time
+            avg_checkpoint_seconds = ((checkpoint_write_time + checkpoint_sync_time) / (checkpoints_timed + checkpoints_req))
+
+            if self.verbose:
+                msg = "chkpt_time=%d chkpt_req=%d  buff_chkpt=%d  buff_clean=%d  maxwritten_clean=%d  buff_backend=%d  buff_backend_fsync=%d  buff_alloc=%d, chkpt_req_pct=%d avg_chkpnt_write=%s total_written=%s chkpnt_write_pct=%d background_write_pct=%d  backend_write_pct=%d avg_checkpoint_time=%d seconds" \
+                % (checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_clean, maxwritten_clean, buffers_backend, buffers_backend_fsync, buffers_alloc, checkpoints_req_pct, avg_checkpoint_write, total_written, checkpoint_write_pct, background_write_pct, backend_write_pct, avg_checkpoint_seconds)
+                print (msg)
+
+            msg = ''
+            if buffers_backend_fsync > 0:
+                marker = MARK_WARN
+                msg = "bgwriter fsync request queue is full. Backend using fsync.  "
+            if backend_write_pct > (checkpoint_write_pct + background_write_pct):
+                marker = MARK_WARN
+                msg += "backend writer doing most of the work.  Consider decreasing \"bgwriter_delay\" by 50% or more to make background writer do more of the work.  "
+            if maxwritten_clean > 500000:
+                # for now just use a hard coded value of 500K til we understand the math about this better
+                marker = MARK_WARN
+                msg += "background writer stopped cleaning scan %d times because it had written too many buffers.  Consider increasing \"bgwriter_lru_maxpages\".  " % maxwritten_clean
+            if checkpoints_req > checkpoints_timed:
+                marker = MARK_WARN
+                msg += "\"checkpoints requested\" contributing to a lot more checkpoints (%d) than \"checkpoint timeout\" (%d).  Consider increasing \"checkpoint_segments or max_wal_size\".  " % (checkpoints_req, checkpoints_timed)            
+            if buffers_backend_fsync > 0:
+                marker = MARK_WARN
+                msg += "storage problem since fsync queue is completely filled. buffers_backend_fsync = %d." % (buffers_backend_fsync)            
+            if buffers_clean > buffers_backend:
+                marker = MARK_WARN
+                msg += "backends doing most of the cleaning. Consider increasing bgwriter_lru_multiplier and decreasing bgwriter_delay.  It could also be a problem with shared_buffers not being big enough."                        
            
-        if msg != '':
-            html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Checkpoint/Background/Backend Writers</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>" 
-        else:
-            marker = MARK_OK
-            msg = "No problems detected with checkpoint, background, or backend writers."
-            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Checkpoint/Background/Backend Writers</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
+            if msg != '':
+                html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Checkpoint/Background/Backend Writers</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>" 
+            else:
+                marker = MARK_OK
+                msg = "No problems detected with checkpoint, background, or backend writers."
+                html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Checkpoint/Background/Backend Writers</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
 
-        if self.html_format:
-            self.appendreport(html)
-        else:
-            self.appendreport(marker+msg+"\n")
-        print (marker+msg            )
+            if self.html_format:
+                self.appendreport(html)
+            else:
+                self.appendreport(marker+msg+"\n")
+            print (marker+msg)
 
 
         ########################
@@ -1815,6 +1854,34 @@ class maint:
         else:
             self.appendreport(marker+msg+"\n")            
         print (marker+msg)
+        
+        ###################################
+        # Check for short-lived connections
+        ###################################
+        sql="select cast(extract(epoch from avg(now()-backend_start)) as integer) as age from pg_stat_activity"
+        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        rc, results = self.executecmd(cmd, False)
+        if rc != SUCCESS:
+            errors = "Unable to get average connection time: %d %s\nsql=%s\n" % (rc, results, sql)
+            aline = "%s" % (errors)
+            self.writeout(aline)
+            return rc, errors
+
+        avgsecs = int(results)
+        if avgsecs > 900:
+            marker = MARK_OK
+            msg = "Connections average more than 15 minutes in duration."
+            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Connection Time</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
+        else:
+            marker = MARK_WARN
+            msg = "Connections average less than 15 minutes (%d)." % (avgsecs / 60)
+            html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Connection Time</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                        
+
+        if self.html_format:
+            self.appendreport(html)
+        else:
+            self.appendreport(marker+msg+"\n")            
+        print (marker+msg)        
 
 
         ####################################
@@ -2012,7 +2079,7 @@ if rc != SUCCESS:
     optionParser.print_help()
     sys.exit(1)
 
-print ("%s  version: %.1f  %s     Python Version: %d     PG Version: %s     PG Database: %s\n\n" % (PROGNAME, VERSION, ADATE, sys.version_info[0], pg.pgversion, pg.database))
+print ("%s  version: %.1f  %s     Python Version: %d     PG Version: %s     PG Database: %s\n\n" % (PROGNAME, VERSION, ADATE, sys.version_info[0], pg.pgversionmajor, pg.database))
 
 #print ("globals=%s" % globals())
 #print ("locals=%s" % locals())
