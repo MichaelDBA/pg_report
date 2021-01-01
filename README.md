@@ -41,7 +41,7 @@ All fields are optional except database and action. The verbose flag is only int
 ## Examples
 Run report on entire test database and output to html format for web browser viewing:
 
-`./pg_maint.py -d test -a report --html`
+`./pg_report.py -d test -a report --html`
 
 
 ## Assumptions
