@@ -138,7 +138,7 @@ DESCRIPTION="This python utility program performs a basic health check for a Pos
 VERSION    = 2.1
 PROGNAME   = "pg_report"
 ADATE      = "January 1, 2021"
-ADATEFMT   = "2021-01-01"
+PROGDATE   = "2021-01-01"
 MARK_OK    = "[ OK ]  "
 MARK_WARN  = "[WARN]  "
 
@@ -147,10 +147,13 @@ MARK_WARN  = "[WARN]  "
 #############################################################################################
 class maint:
     def __init__(self):
-        self.dateprogstr       = datetime.now().strftime(ADATEFMT)
+    
+        self.dateprogstr       = PROGDATE
+        self.dateprog          = datetime.strptime(PROGDATE, "%Y-%m-%d")
         self.datenowstr        = datetime.now().strftime("%Y-%m-%d")
-        self.dateprog          = datetime.strptime(self.dateprogstr, "%Y-%m-%d")
-        self.dateprog          = datetime.strptime(self.datenowstr, "%Y-%m-%d")        				 
+        self.datenow           = datetime.today()
+        self.datediff          = self.datenow - self.dateprog
+        
         self.action            = ''
         self.dbhost            = ''
         self.dbport            = 5432
@@ -1278,10 +1281,14 @@ class maint:
             self.appendreport(marker+msg)
         print (marker+msg)        
         
-        
         # latest versions: 13.1, 12.5, 11.10, 10.15, 9.6.20
         if self.pgversionmajor > Decimal('9.5'):
-            if self.pgversionmajor == Decimal('9.6') and self.pgversionminor < '9.6.20':
+            if self.datediff.days > 120:
+                # probably a newer minor version is already out since these minor versions were last updated in the program
+                marker = MARK_WARN
+	        msg = "Current version: %s.  Please upgrade to latest minor version." % self.pgversionminor
+                html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
+            elif self.pgversionmajor == Decimal('9.6') and self.pgversionminor < '9.6.20':
                 marker = MARK_WARN
                 msg = "Current version: %s.  Please upgrade to latest minor version, 9.6.20." % self.pgversionminor
                 html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
@@ -1937,13 +1944,18 @@ class maint:
             return rc, errors
 
         avgsecs = int(results)
-        if avgsecs > 900:
-            marker = MARK_OK
-            msg = "Connections average more than 15 minutes in duration."
-            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Connection Time</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
-        else:
+        if avgsecs > 172800:
+            # 24 hours, so warn to refresh connections
             marker = MARK_WARN
-            msg = "Connections average less than 15 minutes (%d)." % (avgsecs / 60)
+            msg = "Connections average more than 24 hours (%d minutes). Consider refreshing these connections 2-3 times per day." % (avgsecs / 60)
+            html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Connection Time</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                                    
+        elif avgsecs >= 120:
+            marker = MARK_OK
+            msg = "Connections average more than 2 minutes (%d). This seems acceptable." % (avgsecs / 60)
+            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Connection Time</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
+        elif avgsecs < 200:
+            marker = MARK_WARN
+            msg = "Connections average less than 2 minutes (%d).  Use or tune a connection pooler to keep these connections alive longer." % (avgsecs / 60)
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Connection Time</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                        
 
         if self.html_format:
@@ -2149,7 +2161,6 @@ if rc != SUCCESS:
     sys.exit(1)
 
 print ("%s  version: %.1f  %s     Python Version: %d     PG Version: %s     PG Database: %s\n\n" % (PROGNAME, VERSION, ADATE, sys.version_info[0], pg.pgversionminor, pg.database))
-#print "prog date = %s   date now = %s" % (pg.dateprog, pg.datenow)
 
 #print ("globals=%s" % globals())
 #print ("locals=%s" % locals())
@@ -2160,6 +2171,4 @@ if rc < SUCCESS:
     sys.exit(1)
 
 pg.cleanup()
-
 sys.exit(0)
-
