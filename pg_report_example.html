@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<HTML>
+<HEAD>
+<TITLE>PostgreSQL Report Analysis</TITLE>
+</HEAD>
+<style>.table1 {font-size:16px; border:1px solid black; border-collapse:collapse; }.table1 th { color:#000;    text-align:left; border:1px solid black; padding: 5px;}.table1 td { color:#000099; text-align:left; border:1px solid black; padding: 5px;}caption { text-align:left; caption-side: left; }</style><BODY BGCOLOR="FFFFFF">
+<div id='container'>
+<img src='https://cloud.githubusercontent.com/assets/12436545/12725212/7a1a27be-c8df-11e5-88a6-4e6a88004daa.jpg' style='float: left;'/>
+<p><H1>PostgreSQL Report Analysis</H1></p>
+</div>
+<H2><p>Host: localhost</p><p>Database: postgres</p><p>Generated Sat Jan  2 09:46:49 2021</p></H2>
+<a href="https://github.com/MichaelDBA/pg_report">pg_report</a>  is available on github.
+Send me mail at <a href="mailto:michaeldba@sqlexec.com"> support@sqlexec.com</a>.
+<HR>
+<table class="table1" style="width:100%"> <caption><h3>Health Checks</h3></caption><tr> <th>Status</th> <th>Category</th> <th>Analysis</th> </tr><tr><td width="5%"><font color="red">&#10060;</font></td><td width="20%"><font color="red">PG Major Version Summary</font></td><td width="75%"><font color="red">Current PG major version is not the latest (11.0).  Consider upgrading to 13.</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">PG Minor Version Summary</font></td><td width="75%"><font color="blue">Current PG minor version is the latest (11.10). No minor upgrade necessary.</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Cache Hit Ratio</font></td><td width="75%"><font color="blue">High cache hit ratio: 99.44 (blocks hit vs blocks read)</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Shared Preload Libraries</font></td><td width="75%"><font color="blue">pg_stat_statements loaded</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Connections</font></td><td width="75%"><font color="blue">Current connections (6) are not too close to max connections (100) </font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Idle In Transaction</font></td><td width="75%"><font color="blue">No "idle in transaction" longer than 10 minutes were detected.</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Long Running Queries</font></td><td width="75%"><font color="blue">No "long running queries" longer than 5 minutes were detected.</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Waiting/Blocked queries</font></td><td width="75%"><font color="blue">No "Waiting/Blocked queries" longer than 30 seconds were detected.</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Archiving Status</font></td><td width="75%"><font color="blue">Archiving is on and no WAL backup detected.</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Database Conflicts (deadlocks, Query disk spillover, Standby cancelled queries</font></td><td width="75%"><font color="blue">No database conflicts found.</font></td></tr><tr><td width="5%"><font color="red">&#10060;</font></td><td width="20%"><font color="red">Checkpoint Frequency</font></td><td width="75%"><font color="red">Checkpoints are occurring too fast, every 0.05 minutes, and taking about 0 minutes on average.</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Configuration Settings</font></td><td width="75%"><font color="blue">No configuration problems detected.</font></td></tr><tr><td width="5%"><font color="red">&#10060;</font></td><td width="20%"><font color="red">Checkpoint/Background/Backend Writers</font></td><td width="75%"><font color="red">backend writer doing most of the work.  Consider decreasing "bgwriter_delay" by 50% or more to make background writer do more of the work.  </font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Orphaned Large Objects</font></td><td width="75%"><font color="blue">No orphaned large objects were found.</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Bloated Tables and/or Indexes</font></td><td width="75%"><font color="blue">No bloated tables/indexes were found.</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Unused Indexes</font></td><td width="75%"><font color="blue">No unused indexes were found.</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Connection Time</font></td><td width="75%"><font color="blue">Connections average more than 15 minutes in duration.</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Vacuum Freeze Candidates</font></td><td width="75%"><font color="blue">No vacuum freeze candidates were found.</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Vacuum Analyze Candidates</font></td><td width="75%"><font color="blue">No vacuum analyze candidates were found.</font></td></tr><tr><td width="5%"><font color="blue">&#10004;</font></td><td width="20%"><font color="blue">Network Standby Connections</font></td><td width="75%"><font color="blue">Network: Relatively few network standby connections (44).</font></td></tr><tr><td width="5%"><font color="red">&#10060;</font></td><td width="20%"><font color="red">Kernel Memory Capacity</font></td><td width="75%"><font color="red">Kernel memory overcommitment is currently allowed (default setting: 0).  The OOM Killer may kill at least one of the PostgreSQL processes, which may lead to data corruption.</font></td></tr><tr><td width="5%"><font color="red">&#10060;</font></td><td width="20%"><font color="red">Kernel Memory Capacity</font></td><td width="75%"><font color="red">Kernel memory overcommit ratio is too low (50). Consider increasing to 70 or higher.</font></td></tr></table><p><br></p><H4>Current and recommended PG Memory configuration settings are based on a dedicated PG Server with one PG Instance. Total Physical Memory = 7 GB</H4><table border="1">
+<tr><th align="center">field</th>
+<th align="center">current value</th>
+<th align="center">recommended value</th>
+</tr>
+<tr valign="top">
+<td align="left">effective_cache_size</td>
+<th align="center">0006 GB</th>
+<th align="center">0005 GB</th>
+</tr>
+<tr valign="top">
+<td align="left">shared_buffers</td>
+<th align="center">0001 GB</th>
+<th align="center">0001 GB</th>
+</tr>
+<tr valign="top">
+<td align="left">maintenance_work_mem</td>
+<th align="center">0512 MB</th>
+<th align="center">0256 MB</th>
+</tr>
+<tr valign="top">
+<td align="left">work_mem</td>
+<th align="center">0064 MB</th>
+<th align="center">0032 MB</th>
+</tr>
+</table><p><br></p></BODY>
+</HTML>
