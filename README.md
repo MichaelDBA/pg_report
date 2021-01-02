@@ -17,7 +17,7 @@ It checks for a bunch of database health metrics including load, bloat, long que
 3. psutil for windows only: https://pypi.python.org/pypi?:action=display&name=psutil#downloads
 
 You can see a sample report here:
-@ https://rawgit.com/MichaelDBA/pg_maint/master/SampleReport.html
+@ http://htmlpreview.github.io/?https://github.com/MichaelDBA/pg_report/blob/gh-pages/pg_report_example.html
 
 ## Inputs
 All fields are optional except database and action. The verbose flag is only intended as a debugging feature.
