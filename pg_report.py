@@ -105,12 +105,16 @@
 #                                   Changed print "whatever" to print ("whatever") 
 #                                   Removed Psycopg2 exception handling and replaced with general one.
 #                                   shell command can return an empty byte string in python3--> b'', so check for that as well.
-# Michael Vitale     01/01/2021     v2.1 new features: Connection time avg
+# Michael Vitale     01/01/2021     v2.1 new features: Connection time avg, PG major/minor version evaluation
 #                                   v2.1 changes:  store major and minor pg versions, not just major version for new logic coming
 #                                   v2.1 fixes: Fixed check against 9.6 version for wal directoy location.
 #
 ################################################################################################################
-import string, sys, os, time, datetime
+import string, sys, os, time
+#import datetime
+from datetime import datetime
+from datetime import date
+
 import tempfile, platform, math
 from decimal import *
 import smtplib
@@ -134,6 +138,7 @@ DESCRIPTION="This python utility program performs a basic health check for a Pos
 VERSION    = 2.1
 PROGNAME   = "pg_report"
 ADATE      = "January 1, 2021"
+ADATEFMT   = "2021-01-01"
 MARK_OK    = "[ OK ]  "
 MARK_WARN  = "[WARN]  "
 
@@ -142,6 +147,10 @@ MARK_WARN  = "[WARN]  "
 #############################################################################################
 class maint:
     def __init__(self):
+        self.dateprogstr       = datetime.now().strftime(ADATEFMT)
+        self.datenowstr        = datetime.now().strftime("%Y-%m-%d")
+        self.dateprog          = datetime.strptime(self.dateprogstr, "%Y-%m-%d")
+        self.dateprog          = datetime.strptime(self.datenowstr, "%Y-%m-%d")        				 
         self.action            = ''
         self.dbhost            = ''
         self.dbport            = 5432
@@ -375,7 +384,7 @@ class maint:
 
     ###########################################################
     def getnow(self):
-        now = datetime.datetime.now()
+        now = datetime.now()
         adate = str(now)
         parts = adate.split('.')
         return parts[0]
@@ -1247,6 +1256,62 @@ class maint:
             self.appendreport(html)
         '''
 
+        #####################################
+        # analyze pg major and minor versions
+        #####################################
+        if self.pgversionmajor < Decimal('9.6'):
+            marker = MARK_WARN
+            msg = "Unsupported major version detected: %.1f.  Please upgrade ASAP." % self.pgversionmajor
+            html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Major Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"            
+        elif self.pgversionmajor < Decimal('13.0'):
+            marker = MARK_WARN        
+            msg = "Current PG major version is not the latest (%.1f).  Consider upgrading to 13." % self.pgversionmajor
+            html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Major Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                        
+        else:
+            marker = MARK_OK        
+            msg = "Current PG major version is the latest (%.1f).  No major upgrade necessary." % self.pgversionmajor        
+            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">PG Major Version Summary</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"        
+
+        if self.html_format:
+            self.appendreport(html)
+        else:
+            self.appendreport(marker+msg)
+        print (marker+msg)        
+        
+        
+        # latest versions: 13.1, 12.5, 11.10, 10.15, 9.6.20
+        if self.pgversionmajor > Decimal('9.5'):
+            if self.pgversionmajor == Decimal('9.6') and self.pgversionminor < '9.6.20':
+                marker = MARK_WARN
+                msg = "Current version: %s.  Please upgrade to latest minor version, 9.6.20." % self.pgversionminor
+                html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
+            elif self.pgversionmajor == Decimal('10.0') and self.pgversionminor < '10.15':
+                marker = MARK_WARN        
+                msg = "Current version: %s.  Please upgrade to latest minor version, 10.15." % self.pgversionminor
+                html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
+            elif self.pgversionmajor == Decimal('11.0') and self.pgversionminor < '11.10':
+                marker = MARK_WARN        
+                msg = "Current version: %s.  Please upgrade to latest minor version, 11.10." % self.pgversionminor
+                html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
+            elif self.pgversionmajor == Decimal('12.0') and self.pgversionminor < '12.5':
+                marker = MARK_WARN        
+                msg = "Current version: %s.  Please upgrade to latest minor version, 12.5." % self.pgversionminor
+                html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
+            elif self.pgversionmajor == Decimal('13.0') and self.pgversionminor < '13.1':
+                marker = MARK_WARN        
+                msg = "Current version: %s.  Please upgrade to latest minor version, 13.1." % self.pgversionminor
+                html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
+            else:
+                marker = MARK_OK        
+                msg = "Current PG minor version is the latest (%s). No minor upgrade necessary." % self.pgversionminor        
+                html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"        
+
+            if self.html_format:
+                self.appendreport(html)
+            else:
+                self.appendreport(marker+msg)
+            print (marker+msg)                
+
         #####################
         # get cache hit ratio
         #####################
@@ -1274,7 +1339,7 @@ class maint:
         else:
             marker = MARK_OK
             msg = "High cache hit ratio: %.2f (blocks hit vs blocks read)" % cache_ratio
-            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"red\">Cache Hit Ratio</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
+            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Cache Hit Ratio</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
         if self.html_format:
             self.appendreport(html)
         else:
@@ -1282,12 +1347,16 @@ class maint:
         print (marker+msg)
 
         ##########################
-        # shared_preload_libraies
+        # shared_preload_libraries
         ##########################
         if 'pg_stat_statements' not in self.shared_preload_libraries:
             marker = MARK_WARN
             msg = "pg_stat_statements extension not loaded."
-            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"red\">Cache Hit Ratio</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
+            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"red\">Shared Preload Libraries</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
+        else:
+            marker = MARK_OK
+            msg = "pg_stat_statements loaded"
+            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Shared Preload Libraries</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"        
         if self.html_format:
             self.appendreport(html)
         else:
@@ -2079,7 +2148,8 @@ if rc != SUCCESS:
     optionParser.print_help()
     sys.exit(1)
 
-print ("%s  version: %.1f  %s     Python Version: %d     PG Version: %s     PG Database: %s\n\n" % (PROGNAME, VERSION, ADATE, sys.version_info[0], pg.pgversionmajor, pg.database))
+print ("%s  version: %.1f  %s     Python Version: %d     PG Version: %s     PG Database: %s\n\n" % (PROGNAME, VERSION, ADATE, sys.version_info[0], pg.pgversionminor, pg.database))
+#print "prog date = %s   date now = %s" % (pg.dateprog, pg.datenow)
 
 #print ("globals=%s" % globals())
 #print ("locals=%s" % locals())
@@ -2092,3 +2162,4 @@ if rc < SUCCESS:
 pg.cleanup()
 
 sys.exit(0)
+
