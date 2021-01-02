@@ -41,7 +41,7 @@ All fields are optional except database and action. The verbose flag is only int
 ## Examples
 Run report on entire test database and output to html format for web browser viewing:
 
-`./pg_report.py -d test -a report --html`
+`./pg_report.py -d test --html`
 
 
 ## Assumptions
@@ -51,20 +51,23 @@ Run report on entire test database and output to html format for web browser vie
 4. psql must be in the user's path
 
 ## Report logic
-1.  Cache Hit Ratio
-2.  Connections
-3.  Idle in Transactions
-4.  Long Running Queries
-5.  Lock Waits
-6.  Archiving Status
-7.  Database conflicts, deadlocks, and temp_files.
-8.  Checkpoint Frequency
-9.  Checkpoint, Background, and Backend Writers
-10. Identify orphaned large objects.
-11.  Bloated tables/indexes are identified where at least 20% of the table/index is bloated or the wasted bytes is > 10 GB.
-12. Unused indexes
-13. Vacuum Freeze Candidates
-14. Analyze/Vacuum Analyze candidates
-15. PG memory configuration settings
-16. Linux Kernel Memory Capacity
+1.  PG Major/Minor check
+2.  Cache Hit Ratio
+3.  Shared Preload Libraries
+4.  Connections
+5.  Idle in Transactions
+6.  Long Running Queries
+7.  Lock Waits
+8.  Archiving Status
+9.  Database conflicts, deadlocks, and temp_files.
+10.  Checkpoint Frequency
+11.  Configuration settings.
+12.  Checkpoint, Background, and Backend Writers
+13. Identify orphaned large objects.
+14.  Bloated tables/indexes are identified where at least 20% of the table/index is bloated or the wasted bytes is > 10 GB.
+15. Unused indexes
+16. Vacuum Freeze Candidates
+17. Analyze/Vacuum Analyze candidates
+18. PG memory configuration settings
+19. Linux Kernel Memory Capacity
 
