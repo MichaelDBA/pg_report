@@ -8,7 +8,7 @@ GNU V3 and MIT licenses are conveyed accordingly.
 Bugs can be reported @ michaeldba@sqlexec.com
 
 ## Overview
-It checks for load, bloat, long queries, blocked queries
+It checks for a bunch of database health metrics including load, bloat, long queries, blocked queries, old versions, etc.
 
 ## Requirements
 1. python 2.6 or higher
