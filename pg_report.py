@@ -25,7 +25,7 @@
 ###
 ###############################################################################
 #
-# Original Author: Michael Vitale, michael@commandprompt.com
+# Original Author: Michael Vitale, michaeldba@sqlexec.com
 #
 # Description: This python utility program performs PostgreSQL maintenance tasks.
 #
@@ -108,7 +108,7 @@
 # Michael Vitale     01/01/2021     v2.1 new features: Connection time avg, PG major/minor version evaluation
 #                                   v2.1 changes:  store major and minor pg versions, not just major version for new logic coming
 #                                   v2.1 fixes: Fixed check against 9.6 version for wal directoy location.
-#
+# Michael Vitale     01/12/2021     v2.1 fix: Heroku instances should be treated like rds ones
 ################################################################################################################
 import string, sys, os, time
 #import datetime
@@ -464,7 +464,9 @@ class maint:
                 # for pg rds version, 9.6,  "show all" command does not have shared_preload_libraries! so rely on data_directory instead
                 if 'rdsdbdata' in self.datadir:
                     self.pg_type = 'rds'                
-                
+                # heroku indicator using aws in the background
+                elif self.datadir == '/database':
+                    self.pg_type = 'rds'                
             elif name == 'archive_mode':
                 self.archive_mode = setting
             elif name == 'max_connections':
@@ -893,6 +895,10 @@ class maint:
     ###########################################################
     def do_report_pgmemory(self):
 
+        if self.pg_type == 'rds':
+            # nothing much to report
+            return SUCCESS, ""
+
         # shared_buffers:
         # primitive logic: make shared buffers minimum 4GB or maximum 250GB or 25% of total memory
         # newer versions of PG seem to be more efficient with higher values, so logic is:
@@ -1091,7 +1097,7 @@ class maint:
         if self.html_format:
             self.appendreport("<H4>Unused indexes are identified where there are no index scans and the size of the index is > 8 KB.</H4>\n")
         else:    
-            self.appendreport("Unused indexes are identified where there are no index scans and the size of the index  is > 8 KB.\n")
+            self.appendreport("\nUnused indexes are identified where there are no index scans and the size of the index  is > 8 KB.\n")
 
         # See if this cluster has dependent slaves and if so give information warning
         if self.slavecnt > 0:
@@ -1135,7 +1141,7 @@ class maint:
     def do_report_tablemaintenance(self):
 
         if self.freezecandidates == True:
-            sql = "WITH settings AS (select s.setting from pg_settings s where s.name = 'autovacuum_freeze_max_age') select s.setting, n.nspname as schema, c.relname as table, age(c.relfrozenxid) as xid_age, pg_size_pretty(pg_table_size(c.oid)) as table_size, round((age(c.relfrozenxid)::float / s.setting::float) * 100) as pct from settings s, pg_class c, pg_namespace n WHERE n.oid = c.relnamespace and c.relkind = 'r' and pg_table_size(c.oid) > 1073741824 and round((age(c.relfrozenxid)::float / s.setting::float) * 100) > 50 ORDER BY age(c.relfrozenxid)"
+            sql = "WITH settings AS (select s.setting from pg_settings s where s.name = 'autovacuum_freeze_max_age') select s.setting as autovac_freeze_max_age, n.nspname as schema, c.relname as table, age(c.relfrozenxid) as xid_age, pg_size_pretty(pg_table_size(c.oid)) as table_size, round((age(c.relfrozenxid)::float / s.setting::float) * 100) as pct from settings s, pg_class c, pg_namespace n WHERE n.oid = c.relnamespace and c.relkind = 'r' and pg_table_size(c.oid) > 1073741824 and round((age(c.relfrozenxid)::float / s.setting::float) * 100) > 50 ORDER BY age(c.relfrozenxid)"
             if self.html_format:
                 cmd = "psql %s --html -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
             else:
@@ -1150,7 +1156,7 @@ class maint:
             if self.html_format:
                 self.appendreport("<H4>List of tables that are past the midway point of going into transaction wraparound mode and therefore candidates for manual vacuum freeze.</H4>")
             else:
-                self.appendreport("List of tables that are past the midway point of going into transaction wraparound mode and therefore candidates for manual vacuum freeze.")
+                self.appendreport("\nList of tables that are past the midway point of going into transaction wraparound mode and therefore candidates for manual vacuum freeze.\n")
 
             f = open(self.tempfile, "r")
             lineno = 0
@@ -1171,12 +1177,12 @@ class maint:
                     if self.html_format:
                         self.appendreport(aline)
                     else:     
-                        self.appendreport("%s" % aline)
+                        self.appendreport("%s\n" % aline)
                 else:
                     if self.html_format:
                          self.appendreport(aline)
                     else:
-                        self.appendreport("%s" % aline)
+                        self.appendreport("%s\n" % aline)
             f.close()
             if self.html_format:
                 self.appendreport("<p><br></p>")
@@ -1203,7 +1209,7 @@ class maint:
         if self.html_format:
             self.appendreport("<H4>List of tables that have not been analyzed or vacuumed (manual and auto) in the last 60 days or whose size has changed significantly (n_live_tup/reltuples * 100 < 50) and therefore candidates for manual vacuum analyze.</H4>")
         else:    
-            self.appendreport("List of tables that have not been analyzed or vacuumed (manual and auto) in the last 60 days or whose size has changed significantly (n_live_tup/reltuples * 100 < 50) and therefore candidates for manual vacuum analyze.\n")
+            self.appendreport("\nList of tables that have not been analyzed or vacuumed (manual and auto) in the last 60 days or whose size has changed significantly (n_live_tup/reltuples * 100 < 50) and therefore candidates for manual vacuum analyze.\n")
 
         f = open(self.tempfile, "r")
         lineno = 0
@@ -1576,7 +1582,7 @@ class maint:
         if self.pgversionmajor < Decimal('9.2'):
             sql="select datname, conflicts from pg_stat_database where datname = '%s'" % self.database
         else:
-            sql="select datname, conflicts, deadlocks, temp_files from pg_stat_database where datname = '%s'" % self.database
+            sql="select datname, conflicts, deadlocks, temp_files, temp_bytes from pg_stat_database where datname = '%s'" % self.database
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
@@ -1590,16 +1596,17 @@ class maint:
         conflicts  = int(cols[1].strip())
         deadlocks  = -1
         temp_files = -1
+        temp_bytes = -1
         if len(cols) > 2:
             deadlocks  = int(cols[2].strip())
             temp_files = int(cols[3].strip())
+            temp_bytes = int(cols[4].strip())            
 
-        if self.verbose:
-            print
-
+        #  if self.verbose:
+        #      print
         if conflicts > 0 or deadlocks > 0 or temp_files > 0:
             marker = MARK_WARN
-            msg = "Database conflicts found: database=%s  conflicts=%d  deadlocks=%d  temp_files=%d" % (database, conflicts, deadlocks, temp_files)
+            msg = "Database conflicts found: database=%s  conflicts=%d  deadlocks=%d  temp_files=%d  temp_bytes=%d" % (database, conflicts, deadlocks, temp_files, temp_bytes)
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Database Conflicts (deadlocks, Query disk spillover, Standby cancelled queries)</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
         else:
             marker = MARK_OK
@@ -2171,4 +2178,6 @@ if rc < SUCCESS:
     sys.exit(1)
 
 pg.cleanup()
+
 sys.exit(0)
+
