@@ -14,7 +14,8 @@ It checks for a bunch of database health metrics including load, bloat, long que
 1. python 2.6 or higher
 2. python packages: python-psutil, psycopg2
 3. psql client 
-3. psutil for windows only: https://pypi.python.org/pypi?:action=display&name=psutil#downloads
+4. psutil for windows only: https://pypi.python.org/pypi?:action=display&name=psutil#downloads
+5. postgresql contrib package is necessary for vacuumlo
 
 You can see a sample report here:
 @ http://htmlpreview.github.io/?https://github.com/MichaelDBA/pg_report/blob/gh-pages/pg_report_example.html
