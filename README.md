@@ -15,7 +15,7 @@ It checks for a bunch of database health metrics including load, bloat, long que
 2. python packages: python-psutil, psycopg2
 3. psql client 
 4. psutil for windows only: https://pypi.python.org/pypi?:action=display&name=psutil#downloads
-5. postgresql contrib package is necessary for vacuumlo
+5. postgresql contrib package is necessary for vacuumlo functionality
 
 You can see a sample report here:
 @ http://htmlpreview.github.io/?https://github.com/MichaelDBA/pg_report/blob/gh-pages/pg_report_example.html
@@ -50,6 +50,7 @@ Run report on entire test database and output to html format for web browser vie
 2. db port defaults to 5432 if not provided as parameter.
 3. Password must be in local .pgpass file or client authentication changed to trust or peer
 4. psql must be in the user's path
+5. No .psqlrc file is used.
 
 ## Report logic
 1.  PG Major/Minor check
