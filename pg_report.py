@@ -1,5 +1,5 @@
-#!/usr/bin/env python2 
 #!/usr/bin/env python3 
+#!/usr/bin/env python2
 #!/usr/bin/env python
 #!/usr/bin/python
 ###############################################################################
@@ -55,7 +55,8 @@
 # 2. Max rows defaults to 10 million if not provided as parameter
 # 3. Password must be in local .pgpass file or client authentication changed to trust or peer
 # 4. psql must be in the user's path
-# 6. Load detection assumes that you are running this script from the database host.
+# 5. Load detection assumes that you are running this script from the database host.
+# 6. Make sure timing and pager are turned off (see .psqlrc)
 #
 # Cron Job Info:
 #    View cron job output: view /var/log/cron
@@ -109,6 +110,7 @@
 #                                   v2.1 changes:  store major and minor pg versions, not just major version for new logic coming
 #                                   v2.1 fixes: Fixed check against 9.6 version for wal directoy location.
 # Michael Vitale     01/12/2021     v2.1 fix: Heroku instances should be treated like rds ones
+# Michael Vitale     09/06/2021     v2.2 fix for print commands using parens; don't consider walsender for waiting/blocked queries
 ################################################################################################################
 import string, sys, os, time
 #import datetime
@@ -137,8 +139,8 @@ HIGHLOAD  = 4
 DESCRIPTION="This python utility program performs a basic health check for a PostgreSQL cluster."
 VERSION    = 2.1
 PROGNAME   = "pg_report"
-ADATE      = "January 1, 2021"
-PROGDATE   = "2021-01-01"
+ADATE      = "September 6, 2021"
+PROGDATE   = "2021-09-06"
 MARK_OK    = "[ OK ]  "
 MARK_WARN  = "[WARN]  "
 
@@ -454,6 +456,11 @@ class maint:
             if len(aline) < 1:
                 continue
 
+            # v2.2 fix: things like "Timing is On" can appear as a line so bypass
+            if aline == 'Timing is on.' or aline == 'Timing is off.' or aline == 'Pager usage is off.' or aline == 'Pager is used for long output.' or ':activity' in aline or 'Time: ' in aline:
+                continue
+                
+            # print ("DEBUG:  aline=%s" % (aline))
             fields = aline.split('|')
             name = fields[0].strip()
             setting = fields[1].strip()
@@ -607,13 +614,14 @@ class maint:
         self.pgversionminor = parsed[0]
         
         pos = amajor.find('.')
+        # print ('DEBUG: amajor=***"%s***' % amajor)
         if pos == -1:
             # must be a beta or rc candidate version starting at version 10 since the current version is 10rc1
             self.pgversionmajor =  Decimal(amajor[:2])
         else:
             self.pgversionmajor = Decimal(amajor)
         
-        # print "majorversion = %.1f  minorversion = %s" % (self.pgversionmajor, self.pgversionminor)            
+        #print ("majorversion = %.1f  minorversion = %s" % (self.pgversionmajor, self.pgversionminor))
         return SUCCESS, str(results)
 
     ###########################################################
@@ -1292,7 +1300,7 @@ class maint:
             if self.datediff.days > 120:
                 # probably a newer minor version is already out since these minor versions were last updated in the program
                 marker = MARK_WARN
-	        msg = "Current version: %s.  Please upgrade to latest minor version." % self.pgversionminor
+                msg = "Current version: %s.  Please upgrade to latest minor version." % self.pgversionminor
                 html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
             elif self.pgversionmajor == Decimal('9.6') and self.pgversionminor < '9.6.20':
                 marker = MARK_WARN
@@ -1492,7 +1500,8 @@ class maint:
             sql = "select count(*) from pg_stat_activity where waiting is true and now() - query_start > interval '30 seconds'"
         else:
             # new wait_event column replaces waiting in 9.6/10
-            sql = "select count(*) from pg_stat_activity where wait_event is NOT NULL and state = 'active' and now() - query_start > interval '30 seconds'"
+            # v2.2 fix: add backend_type qualifier to not consider walsender
+            sql = "select count(*) from pg_stat_activity where wait_event is NOT NULL and state = 'active' and backend_type <> 'walsender' and now() - query_start > interval '30 seconds'"
 
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
@@ -2180,4 +2189,3 @@ if rc < SUCCESS:
 pg.cleanup()
 
 sys.exit(0)
-
