@@ -5,7 +5,7 @@
 ###############################################################################
 ### COPYRIGHT NOTICE FOLLOWS.  DO NOT REMOVE
 ###############################################################################
-### Copyright (c) 2016 - 2021 SQLEXEC LLC
+### Copyright (c) 2016 - 2022 SQLEXEC LLC
 ###
 ### Permission to use, copy, modify, and distribute this software and its
 ### documentation for any purpose, without fee, and without a written agreement
@@ -40,7 +40,7 @@
 # -v [verbose output flag, mostly used for debugging]
 #
 # Examples: run report on entire test database and output in web format
-# ./pg_report.py -d test --html
+# ./pg_report.py -d dvdrental --html --dryrun
 #
 # Requirements:
 #  1. python 2.6 or 2.7
@@ -111,6 +111,7 @@
 #                                   v2.1 fixes: Fixed check against 9.6 version for wal directoy location.
 # Michael Vitale     01/12/2021     v2.1 fix: Heroku instances should be treated like rds ones
 # Michael Vitale     09/06/2021     v2.2 fix for print commands using parens; don't consider walsender for waiting/blocked queries
+# Michael Vitale     05/29/2022     v2.3 Check local load
 ################################################################################################################
 import string, sys, os, time
 #import datetime
@@ -137,10 +138,10 @@ NOTICE    = 2
 TOOLONG   = 3
 HIGHLOAD  = 4
 DESCRIPTION="This python utility program performs a basic health check for a PostgreSQL cluster."
-VERSION    = 2.1
+VERSION    = 2.3
 PROGNAME   = "pg_report"
-ADATE      = "September 6, 2021"
-PROGDATE   = "2021-09-06"
+ADATE      = "May 29, 2022"
+PROGDATE   = "2022-05-29"
 MARK_OK    = "[ OK ]  "
 MARK_WARN  = "[WARN]  "
 
@@ -161,12 +162,13 @@ class maint:
         self.dbport            = 5432
         self.dbuser            = ''
         self.database          = ''
-        self.dry_run           = False
+        self.dryrun            = False
         self.verbose           = False
         self.connected         = False
 
         self.fout              = ''
         self.connstring        = ''
+        self.local             = False
 
         self.actstring         = ''
         self.schemaclause      = ' '
@@ -194,6 +196,7 @@ class maint:
         self.freezecandidates  = False
         self.analyzecandidates = False
         self.timestartmins     = time.time() / 60
+        self.loadthreshold     = 70.0
 
         # db config stuff
         self.archive_mode      = ''
@@ -210,14 +213,14 @@ class maint:
         self.overcommit_ratio  = -1
 
     ###########################################################
-    def set_dbinfo(self, dbhost, dbport, dbuser, database, schema, html_format, dry_run, verbose, argv):
+    def set_dbinfo(self, dbhost, dbport, dbuser, database, schema, html_format, dryrun, verbose, argv):
         self.dbhost          = dbhost
         self.dbport          = dbport
         self.dbuser          = dbuser
         self.database        = database
         self.schema          = schema
         self.html_format     = html_format
-        self.dry_run         = dry_run
+        self.dryrun          = dryrun
         self.verbose         = verbose
 
         # process the schema or table elements
@@ -254,6 +257,11 @@ class maint:
             self.connstring += " -U %s " % self.dbuser
         if self.schema != '':
             self.schemaclause = " and n.nspname = '%s' " % self.schema
+
+        # check if local connection for automatic checking of cpus, mem, etc.
+        if 'localhost' in self.dbhost or '127.0.0.1' in self.dbhost or dbhost == '':
+            # appears to be local host
+            self.local = True
 
         if self.verbose:
             print ("The total numbers of args passed to the script: %d " % total)
@@ -722,6 +730,7 @@ class maint:
             LOADR= round(LOAD15/CPUs * 100,2)
             if self.verbose:
                 print ("LOAD15 = %.2f  CPUs=%d LOAD = %.2f%%" % (LOAD15, CPUs, LOADR))
+            #print ("DEBUGGGGGG  LOAD15 = %.2f  CPUs=%d LOAD = %.2f%%" % (LOAD15, CPUs, LOADR))                
 
         else:
             # assume windows
@@ -743,19 +752,16 @@ class maint:
     ###########################################################
     def check_load(self):
 
-        if self.load_threshold == -1:
-            return SUCCESS, ""
-
         rc, results = self.get_load()
         if rc != SUCCESS:
             return rc, results
 
         load = Decimal(results)
 
-        if load > self.load_threshold:
-            return HIGHLOAD, "Current load (%.2f%%) > Threshold load (%d%%)" % (load, self.load_threshold)
+        if load > self.loadthreshold:
+            return HIGHLOAD, "Current load (%.2f%%) > Threshold load (%d%%)" % (load, self.loadthreshold)
         else:
-            return SUCCESS,  "Current load (%.2f%%) < Threshold load (%d%%)" % (load, self.load_threshold)
+            return SUCCESS,  "Current load (%.2f%%) < Threshold load (%d%%)" % (load, self.loadthreshold)
 
     ###########################################################
     def get_slaves(self):
@@ -1059,7 +1065,8 @@ class maint:
         for line in f:
             lineno = lineno + 1
             if self.verbose:
-                print ("%d line=%s" % (lineno,line))
+                #print ("%d line=%s" % (lineno,line))
+                pass
             aline = line.strip()
             if len(aline) < 1:
                 continue
@@ -1123,7 +1130,8 @@ class maint:
         for line in f:
             lineno = lineno + 1
             if self.verbose:
-                print ("%d line=%s" % (lineno,line))
+                #print ("%d line=%s" % (lineno,line))
+                pass
             aline = line.strip()
             if len(aline) < 1:
                 continue
@@ -1172,7 +1180,8 @@ class maint:
             for line in f:
                 lineno = lineno + 1
                 if self.verbose:
-                    print ("%d line=%s" % (lineno,line))
+                    #print ("%d line=%s" % (lineno,line))
+                    pass
                 aline = line.strip()
                 if len(aline) < 1:
                     continue
@@ -1225,7 +1234,8 @@ class maint:
         for line in f:
             lineno = lineno + 1
             if self.verbose:
-                print ("%d line=%s" % (lineno,line))
+                #print ("%d line=%s" % (lineno,line))
+                pass
             aline = line.strip()
             if len(aline) < 1:
                 continue
@@ -1332,6 +1342,33 @@ class maint:
             else:
                 self.appendreport(marker+msg)
             print (marker+msg)                
+
+
+        #####################
+        # get local load info
+        #####################
+        # v2.3 
+        rc,results = self.check_load()
+        msg = results
+        
+        # only report if db is local
+        if not self.local:        
+            msg = 'Local Load Summary: N/A'
+            marker = MARK_OK        
+            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Local Load Summary</font></td><td width=\"75%\"><font color=\"blue\">" + 'N/A' + "</font></td></tr>"                
+        elif rc == HIGHLOAD:
+            marker = MARK_WARN
+            html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Local Load Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"            
+        else:
+            marker = MARK_OK        
+            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Local Load Summary</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"        
+
+        if self.html_format:
+            self.appendreport(html)
+        else:
+            self.appendreport(marker+msg)
+        print (marker+msg)        
+
 
         #####################
         # get cache hit ratio
@@ -2151,7 +2188,7 @@ def setupOptionParser():
     parser.add_option("-d", "--database",       dest="database", help="database name",                          default="",metavar="DATABASE")
     parser.add_option("-n", "--schema",         dest="schema", help="schema name",                              default="",metavar="SCHEMA")
     parser.add_option("-m", "--html",           dest="html", help="html report format",                         default=False, action="store_true")
-    parser.add_option("-r", "--dry_run",        dest="dry_run", help="Dry Run Only",                            default=False, action="store_true")
+    parser.add_option("-r", "--dryrun",         dest="dryrun", help="Dry Run Only",                             default=False, action="store_true")
     parser.add_option("-v", "--verbose",        dest="verbose", help="Verbose Output",                          default=False, action="store_true")
 
     return parser
@@ -2170,7 +2207,7 @@ pg = maint()
 
 # Load and validate parameters
 rc, errors = pg.set_dbinfo(options.dbhost, options.dbport, options.dbuser, options.database, options.schema, \
-                           options.html, options.dry_run, options.verbose, sys.argv)
+                           options.html, options.dryrun, options.verbose, sys.argv)
 if rc != SUCCESS:
     print (errors)
     optionParser.print_help()
