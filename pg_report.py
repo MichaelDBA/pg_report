@@ -1996,10 +1996,12 @@ class maint:
             self.appendreport(marker+msg+"\n")            
         print (marker+msg)
         
-        ###################################
-        # Check for short-lived connections
-        ###################################
-        sql="select cast(extract(epoch from avg(now()-backend_start)) as integer) as age from pg_stat_activity"
+        ########################################################
+        # Check for short-lived and extremely long connections #
+        ########################################################
+        sql="SELECT cast(extract(epoch from avg(now()-backend_start)) as integer) as age FROM pg_stat_activity " \
+            "WHERE usename <> 'rdsadmin' AND datname IS NOT NULL AND " \
+            "(backend_type not in ('logical replication launcher', 'autovacuum launcher') OR wait_event not in ('LogicalLauncherMain','AutoVacuumMain'))"
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
