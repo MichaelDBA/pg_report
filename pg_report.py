@@ -2014,15 +2014,15 @@ class maint:
         if avgsecs > 172800:
             # 24 hours, so warn to refresh connections
             marker = MARK_WARN
-            msg = "Connections average more than 24 hours (%d minutes). Consider refreshing these connections 2-3 times per day." % (avgsecs / 60)
+            msg = "Connections average more than 24 hours (%d). Consider refreshing these connections 2-3 times per day." % (avgsecs / 60)
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Connection Time</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                                    
-        elif avgsecs >= 120:
+        elif avgsecs >= 300:
             marker = MARK_OK
-            msg = "Connections average more than 2 minutes (%d). This seems acceptable." % (avgsecs / 60)
+            msg = "Connection duration averages more than 5 minutes (%d). This seems acceptable." % (avgsecs / 60)
             html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Connection Time</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
-        elif avgsecs < 200:
+        elif avgsecs < 300:
             marker = MARK_WARN
-            msg = "Connections average less than 2 minutes (%d).  Use or tune a connection pooler to keep these connections alive longer." % (avgsecs / 60)
+            msg = "Connections average less than 5 minutes (%d).  Use or tune a connection pooler to keep these connections alive longer." % (avgsecs / 60)
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Connection Time</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                        
 
         if self.html_format:
