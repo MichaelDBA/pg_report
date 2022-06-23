@@ -1551,7 +1551,7 @@ class maint:
         else:
             # new wait_event column replaces waiting in 9.6/10
             # v2.2 fix: add backend_type qualifier to not consider walsender
-            sql = "select count(*) from pg_stat_activity where wait_event is NOT NULL and state = 'active' and backend_type <> 'walsender' and now() - query_start > interval '30 seconds'"
+            sql = "select count(*) from pg_stat_activity where wait_event is NOT NULL and wait_event not in ('DataFileRead') and state = 'active' and backend_type <> 'walsender' and now() - query_start > interval '30 seconds'"
 
         cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
