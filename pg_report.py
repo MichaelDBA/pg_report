@@ -112,7 +112,7 @@
 # Michael Vitale     01/12/2021     v2.1 fix: Heroku instances should be treated like rds ones
 # Michael Vitale     09/06/2021     v2.2 fix for print commands using parens; don't consider walsender for waiting/blocked queries
 # Michael Vitale     05/29/2022     v2.3 Check local load
-# Michael Vitale     06/23/2022     v2.4 Bug fixes. Do not check local resources for remote DB servers.
+# Michael Vitale     06/23/2022     v2.4 Bug fixes. Do not check local resources for remote DB servers.  Updated latest versions of PG.
 ################################################################################################################
 import string, sys, os, time
 #import datetime
@@ -1293,13 +1293,13 @@ class maint:
         #####################################
         # analyze pg major and minor versions
         #####################################
-        if self.pgversionmajor < Decimal('9.6'):
+        if self.pgversionmajor < Decimal('10.0'):
             marker = MARK_WARN
-            msg = "Unsupported major version detected: %.1f.  Please upgrade ASAP." % self.pgversionmajor
+            msg = "(EOL) Unsupported major version detected: %.1f.  Please upgrade ASAP." % self.pgversionmajor
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Major Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"            
-        elif self.pgversionmajor < Decimal('13.0'):
+        elif self.pgversionmajor < Decimal('14.0'):
             marker = MARK_WARN        
-            msg = "Current PG major version is not the latest (%.1f).  Consider upgrading to 13." % self.pgversionmajor
+            msg = "Current PG major version is not the latest (%.1f).  Consider upgrading to 14." % self.pgversionmajor
             html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Major Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                        
         else:
             marker = MARK_OK        
@@ -1312,33 +1312,38 @@ class maint:
             self.appendreport(marker+msg)
         print (marker+msg)        
         
-        # latest versions: 13.1, 12.5, 11.10, 10.15, 9.6.20
+        # latest versions: 14.4, 13.7, 12.11, 11.16, 10.21, EOL(9.6.24)
         if self.pgversionmajor > Decimal('9.5'):
             if self.datediff.days > 120:
                 # probably a newer minor version is already out since these minor versions were last updated in the program
                 marker = MARK_WARN
                 msg = "Current version: %s.  Please upgrade to latest minor version." % self.pgversionminor
                 html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
-            elif self.pgversionmajor == Decimal('9.6') and self.pgversionminor < '9.6.20':
+            elif self.pgversionmajor == Decimal('9.6') and self.pgversionminor < '9.6.24':
                 marker = MARK_WARN
-                msg = "Current version: %s.  Please upgrade to latest minor version, 9.6.20." % self.pgversionminor
+                msg = "Current version: %s.  Please upgrade to latest minor version, 9.6.24." % self.pgversionminor
                 html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
-            elif self.pgversionmajor == Decimal('10.0') and self.pgversionminor < '10.15':
+            elif self.pgversionmajor == Decimal('10.0') and self.pgversionminor < '10.21':
                 marker = MARK_WARN        
-                msg = "Current version: %s.  Please upgrade to latest minor version, 10.15." % self.pgversionminor
+                msg = "Current version: %s.  Please upgrade to latest minor version, 10.21." % self.pgversionminor
                 html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
-            elif self.pgversionmajor == Decimal('11.0') and self.pgversionminor < '11.10':
+            elif self.pgversionmajor == Decimal('11.0') and self.pgversionminor < '11.16':
                 marker = MARK_WARN        
-                msg = "Current version: %s.  Please upgrade to latest minor version, 11.10." % self.pgversionminor
+                msg = "Current version: %s.  Please upgrade to latest minor version, 11.16." % self.pgversionminor
                 html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
-            elif self.pgversionmajor == Decimal('12.0') and self.pgversionminor < '12.5':
+            elif self.pgversionmajor == Decimal('12.0') and self.pgversionminor < '12.11':
                 marker = MARK_WARN        
-                msg = "Current version: %s.  Please upgrade to latest minor version, 12.5." % self.pgversionminor
+                msg = "Current version: %s.  Please upgrade to latest minor version, 12.11." % self.pgversionminor
                 html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
-            elif self.pgversionmajor == Decimal('13.0') and self.pgversionminor < '13.1':
+            elif self.pgversionmajor == Decimal('13.0') and self.pgversionminor < '13.7':
                 marker = MARK_WARN        
-                msg = "Current version: %s.  Please upgrade to latest minor version, 13.1." % self.pgversionminor
+                msg = "Current version: %s.  Please upgrade to latest minor version, 13.7." % self.pgversionminor
                 html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
+            elif self.pgversionmajor == Decimal('14.0') and self.pgversionminor < '14.4':
+                marker = MARK_WARN        
+                msg = "Current version: %s.  Please upgrade to latest minor version, 14.4." % self.pgversionminor
+                html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">PG Minor Version Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"                            
+                
             else:
                 marker = MARK_OK        
                 msg = "Current PG minor version is the latest (%s). No minor upgrade necessary." % self.pgversionminor        
