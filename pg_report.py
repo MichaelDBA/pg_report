@@ -623,14 +623,14 @@ class maint:
         self.pgversionminor = parsed[0]
         
         pos = amajor.find('.')
-        # print ('DEBUG: amajor=***"%s***' % amajor)
         if pos == -1:
             # must be a beta or rc candidate version starting at version 10 since the current version is 10rc1
             self.pgversionmajor =  Decimal(amajor[:2])
         else:
             self.pgversionmajor = Decimal(amajor)
         
-        #print ("majorversion = %.1f  minorversion = %s" % (self.pgversionmajor, self.pgversionminor))
+        if self.verbose:
+            print ("results=%s  majorversion = %.1f  minorversion = %s" % (results, self.pgversionmajor, self.pgversionminor))
         return SUCCESS, str(results)
 
     ###########################################################
