@@ -43,7 +43,7 @@
 # ./pg_report.py -d dvdrental --html --dryrun
 #
 # Requirements:
-#  1. python 2.6 or 2.7
+#  1. python 2.6+ or 3.x
 #  2. psql client
 #  3. psutil for windows only: https://pypi.python.org/pypi?:action=display&name=psutil#downloads
 #      (fyi for gettting it on linux but not required: apt-get install python-psutil or yum install python-psutil)
@@ -112,6 +112,7 @@
 # Michael Vitale     01/12/2021     v2.1 fix: Heroku instances should be treated like rds ones
 # Michael Vitale     09/06/2021     v2.2 fix for print commands using parens; don't consider walsender for waiting/blocked queries
 # Michael Vitale     05/29/2022     v2.3 Check local load
+# Michael Vitale     06/23/2022     v2.4 Bug fixes. Do not check local resources for remote DB servers.
 ################################################################################################################
 import string, sys, os, time
 #import datetime
@@ -138,10 +139,10 @@ NOTICE    = 2
 TOOLONG   = 3
 HIGHLOAD  = 4
 DESCRIPTION="This python utility program performs a basic health check for a PostgreSQL cluster."
-VERSION    = 2.3
+VERSION    = 2.4
 PROGNAME   = "pg_report"
-ADATE      = "May 29, 2022"
-PROGDATE   = "2022-05-29"
+ADATE      = "June 23, 2022"
+PROGDATE   = "2022-06-23"
 MARK_OK    = "[ OK ]  "
 MARK_WARN  = "[WARN]  "
 
@@ -266,7 +267,7 @@ class maint:
         if self.verbose:
             print ("The total numbers of args passed to the script: %d " % total)
             print ("Args list: %s " % cmdargs)
-            print ("connection string: %s" % self.connstring)
+            print ("connection string: %s    Using localhost?(%r)." % (self.connstring, self.local))
 
         self.programdir = sys.path[0]
 
@@ -294,9 +295,9 @@ class maint:
             return rc, errors
 
         # get total memory  total memory is in bytes
-        self.totalmemGB = self.get_physicalmem()
-
-        self.overcommit_memory, self.overcommit_ratio = self.get_kernelmemorycapacity()
+        if self.local:
+            self.totalmemGB = self.get_physicalmem()
+            self.overcommit_memory, self.overcommit_ratio = self.get_kernelmemorycapacity()
 
         # get pg bind directory from pg_config
         rc, results = self.get_pgbindir()
@@ -450,7 +451,7 @@ class maint:
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             # let calling function report the error
-            errors = "Unable to get config info: %d %s\nsql=%s\n" % (rc, results, sql)
+            errors = "Unable to get config info: %d %s\ncommand=%s\n" % (rc, results, cmd)
             #aline = "%s" % (errors)
             #self.writeout(aline)
             return rc, errors
@@ -465,7 +466,7 @@ class maint:
                 continue
 
             # v2.2 fix: things like "Timing is On" can appear as a line so bypass
-            if aline == 'Timing is on.' or aline == 'Timing is off.' or aline == 'Pager usage is off.' or aline == 'Pager is used for long output.' or ':activity' in aline or 'Time: ' in aline:
+            if aline == 'Administrative queries:' or aline == 'Timing is on.' or aline == 'Timing is off.' or aline == 'Pager usage is off.' or aline == 'Pager is used for long output.' or ':activity' in aline or 'Time: ' in aline:
                 continue
                 
             # print ("DEBUG:  aline=%s" % (aline))
@@ -523,8 +524,8 @@ class maint:
 
     ###########################################################
     def executecmd(self, cmd, expect):
-        if self.verbose:
-            print ("executecmd --> %s" % cmd)
+        #if self.verbose:
+        #    print ("executecmd --> %s" % cmd)
 
         # NOTE: try and catch does not work for Popen
         try:
@@ -572,8 +573,8 @@ class maint:
         values = values.strip()
                 
         rc = p.returncode
-        if self.verbose:
-            print ("rc=%d  values=***%s***  errors=***%s***" % (rc, values, err))
+        #if self.verbose:
+        #    print ("rc=%d  values=***%s***  errors=***%s***" % (rc, values, err))
 
         if rc == 1 or rc == 2:
             return ERROR2, err
@@ -728,8 +729,8 @@ class maint:
             LOAD15=Decimal(results)
 
             LOADR= round(LOAD15/CPUs * 100,2)
-            if self.verbose:
-                print ("LOAD15 = %.2f  CPUs=%d LOAD = %.2f%%" % (LOAD15, CPUs, LOADR))
+            #if self.verbose:
+            #    print ("LOAD15 = %.2f  CPUs=%d LOAD = %.2f%%" % (LOAD15, CPUs, LOADR))
             #print ("DEBUGGGGGG  LOAD15 = %.2f  CPUs=%d LOAD = %.2f%%" % (LOAD15, CPUs, LOADR))                
 
         else:
@@ -741,8 +742,8 @@ class maint:
                 aline = "%s" % (errors)
                 self.writeout(aline)
                 return rc, errors
-            if self.verbose:
-                print ("windows load: %d %s" % (rc, results))
+            #if self.verbose:
+            #    print ("windows load: %d %s" % (rc, results))
             LOAD = results.split('\n')
             LOADR = int(LOAD[1])
 
@@ -2204,6 +2205,12 @@ optionParser   = setupOptionParser()
 
 # load the instance
 pg = maint()
+
+# make sure we got a few input parms
+if options.database == '':
+    print ('You must provide some input parameters like database name, etc.')
+    optionParser.print_help()
+    sys.exit(1)
 
 # Load and validate parameters
 rc, errors = pg.set_dbinfo(options.dbhost, options.dbport, options.dbuser, options.database, options.schema, \
