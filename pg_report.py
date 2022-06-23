@@ -621,6 +621,9 @@ class maint:
         
         amajor = parsed[1]
         self.pgversionminor = parsed[0]
+
+        if self.verbose:
+            print ("results=%s  parsed=%s  amajor=%s  aminor=%s" % (results, parsed, amajor, self.pgversionminor))
         
         pos = amajor.find('.')
         if pos == -1:
@@ -628,9 +631,7 @@ class maint:
             self.pgversionmajor =  Decimal(amajor[:2])
         else:
             self.pgversionmajor = Decimal(amajor)
-        
-        if self.verbose:
-            print ("results=%s  majorversion = %.1f  minorversion = %s" % (results, self.pgversionmajor, self.pgversionminor))
+
         return SUCCESS, str(results)
 
     ###########################################################
@@ -2233,4 +2234,3 @@ if rc < SUCCESS:
 pg.cleanup()
 
 sys.exit(0)
-
