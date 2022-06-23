@@ -1350,26 +1350,27 @@ class maint:
         # get local load info
         #####################
         # v2.3 
-        rc,results = self.check_load()
-        msg = results
+        if self.local:
+            rc,results = self.check_load()
+            msg = results
         
-        # only report if db is local
-        if not self.local:        
-            msg = 'Local Load Summary: N/A'
-            marker = MARK_OK        
-            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Local Load Summary</font></td><td width=\"75%\"><font color=\"blue\">" + 'N/A' + "</font></td></tr>"                
-        elif rc == HIGHLOAD:
-            marker = MARK_WARN
-            html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Local Load Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"            
-        else:
-            marker = MARK_OK        
-            html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Local Load Summary</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"        
+            # only report if db is local
+            if not self.local:        
+                msg = 'Local Load Summary: N/A'
+                marker = MARK_OK        
+                html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Local Load Summary</font></td><td width=\"75%\"><font color=\"blue\">" + 'N/A' + "</font></td></tr>"                
+            elif rc == HIGHLOAD:
+                marker = MARK_WARN
+                html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Local Load Summary</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"            
+            else:
+                marker = MARK_OK        
+                html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Local Load Summary</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"        
 
-        if self.html_format:
-            self.appendreport(html)
-        else:
-            self.appendreport(marker+msg)
-        print (marker+msg)        
+            if self.html_format:
+                self.appendreport(html)
+            else:
+                self.appendreport(marker+msg)
+            print (marker+msg)        
 
 
         #####################
