@@ -479,10 +479,12 @@ class maint:
                 self.datadir = setting
                 # for pg rds version, 9.6,  "show all" command does not have shared_preload_libraries! so rely on data_directory instead
                 if 'rdsdbdata' in self.datadir:
+                    # could be rds or aurora
                     self.pg_type = 'rds'                
-                # heroku indicator using aws in the background
+                # heroku indicator using aws in the background, also used for aws ec2! so change logic to imply community
                 elif self.datadir == '/database':
-                    self.pg_type = 'rds'                
+                    # self.pg_type = 'rds'
+                    self.pg_type = 'community'
             elif name == 'archive_mode':
                 self.archive_mode = setting
             elif name == 'max_connections':
@@ -524,8 +526,6 @@ class maint:
 
     ###########################################################
     def executecmd(self, cmd, expect):
-        #if self.verbose:
-        #    print ("executecmd --> %s" % cmd)
 
         # NOTE: try and catch does not work for Popen
         try:
@@ -537,25 +537,32 @@ class maint:
             values2, err2 = p.communicate()
 
         except exceptions.OSError as e:
-            print ("exceptions.OSError Error",e)
+            if self.verbose:
+                print ("exceptions.OSError Error",e)
             return ERROR, "Error(1)"
         except BaseException as e:
-            print ("BaseException Error",e)
+            if self.verbose:
+                print ("BaseException Error",e)
             return ERROR, "Error(2)"
         except OSError as e:
-            print ("OSError Error", e)
+            if self.verbose:
+                print ("OSError Error", e)
             return ERROR, "Error(3)"
         except RuntimeError as e:
-            print ("RuntimeError", e)
+            if self.verbose:
+                print ("RuntimeError", e)
             return ERROR, "Error(4)"
         except ValueError as e:
-            print ("Value Error", e)
+            if self.verbose:
+                print ("Value Error", e)
             return ERROR, "Error(5)"
         except Exception as e:
-            print ("General Exception Error", e)
+            if self.verbose:
+                print ("General Exception Error", e)
             return ERROR, "Error(6)"
         except:
-            print ("Unexpected error:", sys.exc_info()[0])
+            if self.verbose:
+                print ("Unexpected error:", sys.exc_info()[0])
             return ERROR, "Error(7)"
 
         if err2 is None or len(err2) == 0:
@@ -587,7 +594,6 @@ class maint:
         elif values == "" and expect == True:
             return ERROR2, values
         elif rc != SUCCESS:
-            # print or(stderr_data)
             return rc, err
         elif values == "" and expect:
             return ERROR3, 'return set is empty'
@@ -651,14 +657,13 @@ class maint:
 
         # do not provide host name and/or port if not provided
         cmd = "psql %s -t -c \"%s\" " % (self.connstring, sql)
-
         rc, results = self.executecmd(cmd, True)
         if rc != SUCCESS:
-            errors = "%s\n" % (results)
+            errors = "%s" % (results)
             aline = "%s" % (errors)
-
-            self.writeout(aline)
-            return rc, errors
+            #self.writeout(aline)
+            #return rc, errors
+            return WARNING, errors
 
         return SUCCESS, str(results)
 
@@ -1569,52 +1574,51 @@ class maint:
         # get archiving info if available
         #################################
         rc, results = self.get_readycnt()
-        if rc != SUCCESS:
+        if rc == WARNING:
+            errors = "Unable to get archiving status: %d %s" % (rc, results)
+            aline = "%s" % (errors)
+            self.writeout(aline)
+        elif rc != SUCCESS:
             errors = "Unable to get archiving status: %d %s\n" % (rc, results)
             aline = "%s" % (errors)
             self.writeout(aline)
             return rc, errors
-
-        readycnt = int(results)
-
-        if self.verbose:
-            print ("Ready Count = %d" % readycnt)
-
-        if readycnt > 1000:
-            if self.html_format:
-                marker = MARK_WARN
-                msg = "Archiving is behind more than 1000 WAL files. Current count: %d" % readycnt
-                html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Archiving Status</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
-
-        elif readycnt == 0:
-            if self.archive_mode == 'on':
+        else:
+            readycnt = int(results)
+            if self.verbose:
+                print ("Ready Count = %d" % readycnt)
+            if readycnt > 1000:
+                if self.html_format:
+                    marker = MARK_WARN
+                    msg = "Archiving is behind more than 1000 WAL files. Current count: %d" % readycnt
+                    html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Archiving Status</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>"
+            elif readycnt == 0:
+                if self.archive_mode == 'on':
+                    marker = MARK_OK
+                    msg = "Archiving is on and no WAL backup detected."            
+                    if self.html_format:
+                        html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Archiving Status</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
+                    else:
+                        msg = "Archiving Status: %s" % msg 
+                else:
+                    marker = MARK_OK
+                    msg = "Archiving is off so nothing to analyze."
+                    if self.html_format:
+                        html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Archiving Status</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
+                    else:
+                        msg = "Archiving Status: %s" % msg 
+            else:
                 marker = MARK_OK
-                msg = "Archiving is on and no WAL backup detected."            
+                msg = "Archiving is working and not too far behind. WALs waiting to be archived=%d" % readycnt
                 if self.html_format:
                     html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Archiving Status</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
                 else:
                     msg = "Archiving Status: %s" % msg 
-            else:
-                marker = MARK_OK
-                msg = "Archiving is off so nothing to analyze."
-                if self.html_format:
-                    html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Archiving Status</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
-                else:
-                    msg = "Archiving Status: %s" % msg 
-                    
-        else:
-            marker = MARK_OK
-            msg = "Archiving is working and not too far behind. WALs waiting to be archived=%d" % readycnt
             if self.html_format:
-                html = "<tr><td width=\"5%\"><font color=\"blue\">&#10004;</font></td><td width=\"20%\"><font color=\"blue\">Archiving Status</font></td><td width=\"75%\"><font color=\"blue\">" + msg + "</font></td></tr>"
+                self.appendreport(html)
             else:
-                msg = "Archiving Status: %s" % msg 
-
-        if self.html_format:
-            self.appendreport(html)
-        else:
-            self.appendreport(marker+msg+"\n")
-        print (marker+msg)
+                self.appendreport(marker+msg+"\n")
+            print (marker+msg)
 
         ###########################################################################################################################################
         # database conflicts: only applies to PG versions greater or equal to 9.1.  9.2 has additional fields of interest: deadlocks and temp_files
