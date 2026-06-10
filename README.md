@@ -49,8 +49,9 @@ Run report on entire test database and output to html format for web browser vie
 1. db user defaults to postgres if not provided as parameter.
 2. db port defaults to 5432 if not provided as parameter.
 3. Password must be in local .pgpass file or client authentication changed to trust or peer
-4. psql must be in the user's path
-5. No .psqlrc file is used.
+4. Password can also be set in environment variable PGPASSWORD.
+5. psql must be in the user's path
+6. No .psqlrc file is used.
 
 ## Report logic
 1.  PG Major/Minor check
