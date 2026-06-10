@@ -5,7 +5,7 @@
 ###############################################################################
 ### COPYRIGHT NOTICE FOLLOWS.  DO NOT REMOVE
 ###############################################################################
-### Copyright (c) 2016 - 2022 SQLEXEC LLC
+### Copyright (c) 2016 - 2026 SQLEXEC LLC
 ###
 ### Permission to use, copy, modify, and distribute this software and its
 ### documentation for any purpose, without fee, and without a written agreement
@@ -22,7 +22,6 @@
 ### PARTICULAR PURPOSE. THE SOFTWARE PROVIDED HEREUNDER IS ON AN "AS IS" BASIS,
 ### AND SQLEXEC LLC HAS NO OBLIGATIONS TO PROVIDE MAINTENANCE, SUPPORT, UPDATES,
 ### ENHANCEMENTS, OR MODIFICATIONS.
-###
 ###############################################################################
 #
 # Original Author: Michael Vitale, michaeldba@sqlexec.com
@@ -113,6 +112,7 @@
 # Michael Vitale     09/06/2021     v2.2 fix for print commands using parens; don't consider walsender for waiting/blocked queries
 # Michael Vitale     05/29/2022     v2.3 Check local load
 # Michael Vitale     06/23/2022     v2.4 Bug fixes. Do not check local resources for remote DB servers.  Updated latest versions of PG.
+# Michael Vitale     06/10/2026     v2.5 Fix queries that relate to new tables, pg_stat_checkpointer and pg_stat_io. Also added windows compatibility.
 ################################################################################################################
 import string, sys, os, time
 #import datetime
@@ -139,10 +139,10 @@ NOTICE    = 2
 TOOLONG   = 3
 HIGHLOAD  = 4
 DESCRIPTION="This python utility program performs a basic health check for a PostgreSQL cluster."
-VERSION    = 2.4
+VERSION    = 2.5
 PROGNAME   = "pg_report"
-ADATE      = "June 23, 2022"
-PROGDATE   = "2022-06-23"
+ADATE      = "June 10, 2026"
+PROGDATE   = "2026-06-10"
 MARK_OK    = "[ OK ]  "
 MARK_WARN  = "[WARN]  "
 
@@ -163,6 +163,7 @@ class maint:
         self.dbport            = 5432
         self.dbuser            = ''
         self.database          = ''
+        self.dbpass            = ''
         self.dryrun            = False
         self.verbose           = False
         self.connected         = False
@@ -223,7 +224,7 @@ class maint:
         self.html_format     = html_format
         self.dryrun          = dryrun
         self.verbose         = verbose
-
+        
         # process the schema or table elements
         total   = len(argv)
         cmdargs = str(argv)
@@ -245,6 +246,12 @@ class maint:
         else:    
             self.reportfile        = "%s%s%s_report.txt" % (self.tempdir, self.dir_delim, self.pid)
         
+        pgpassword = os.environ.get("PGPASSWORD")
+        if self.verbose:
+            if pgpassword is None:
+                print("PGPASSWORD is not set")
+            else:
+                print(f"PGPASSWORD is set")
 
         # construct the connection string that will be used in all database requests
         # do not provide host name and/or port if not provided
@@ -326,7 +333,7 @@ class maint:
 
 
     ###########################################################
-    def get_physicalmem(self):
+    def get_physicalmemold(self):
 
         if self.opsys == 'posix':
             cmd = "free -g | grep Mem: | /usr/bin/awk '{ total=$2; } END { print \"total=\" total  }'"
@@ -344,6 +351,38 @@ class maint:
             from psutil import virtual_memory
             mem = virtual_memory()
             totalmem_prettyGB = mem.total / (1024*1024*1024)
+
+        if self.verbose:
+            print (" total physical memory: %s GB" % totalmem_prettyGB)
+
+        return totalmem_prettyGB
+    # linux and windows support
+    def get_physicalmem(self):
+        if self.opsys == 'posix':
+            cmd = "free -g | grep Mem: | /usr/bin/awk '{ total=$2; } END { print \"total=\" total  }'"
+            rc, results = self.executecmd(cmd, True)
+            if rc != SUCCESS:
+                errors = "unable to get Total Physical Memory.  rc=%d %s\n" % (rc, results)
+                aline = "%s" % (errors)
+                self.writeout(aline)
+                return rc, errors
+            results = results.split('=')
+            totalmem_prettyGB = int(results[1].strip())
+        else:
+            # must be windows, nt
+            # Use native wmic instead of requiring psutil
+            cmd = "wmic computersystem get TotalPhysicalMemory"
+            rc, results = self.executecmd(cmd, True)
+            if rc == SUCCESS:
+                # Safely parse the wmic output
+                lines = [line.strip() for line in results.split('\n') if line.strip()]
+                if len(lines) > 1:
+                    mem_bytes = int(lines[1])
+                    totalmem_prettyGB = mem_bytes / (1024 * 1024 * 1024)
+                else:
+                    totalmem_prettyGB = 0
+            else:
+                totalmem_prettyGB = 0
 
         if self.verbose:
             print (" total physical memory: %s GB" % totalmem_prettyGB)
@@ -447,7 +486,7 @@ class maint:
 
         sql = "show all"
 
-        cmd = "psql %s -t -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
+        cmd = "psql -X %s -t -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             # let calling function report the error
@@ -464,12 +503,13 @@ class maint:
             aline = line.strip()
             if len(aline) < 1:
                 continue
+            #if self.verbose:
+            #    print ("DEBUG:  aline=%s" % (aline))                
 
             # v2.2 fix: things like "Timing is On" can appear as a line so bypass
             if aline == 'Administrative queries:' or aline == 'Timing is on.' or aline == 'Timing is off.' or aline == 'Pager usage is off.' or aline == 'Pager is used for long output.' or ':activity' in aline or 'Time: ' in aline:
                 continue
                 
-            # print ("DEBUG:  aline=%s" % (aline))
             fields = aline.split('|')
             name = fields[0].strip()
             setting = fields[1].strip()
@@ -610,7 +650,7 @@ class maint:
         sql = "select  trim(substring(version(), 12, position(' ' in substring(version(),12)))) || '-' || substring(foo.major from 12 for 3)as major  from (select version() as major) foo"
         
         # do not provide host name and/or port if not provided
-        cmd = "psql %s -t -c \"%s\" " % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\" " % (self.connstring, sql)
 
         rc, results = self.executecmd(cmd, True)
         if rc != SUCCESS:
@@ -656,7 +696,7 @@ class maint:
         sql = "select count(*) from (select pg_ls_dir from pg_ls_dir('%s') where pg_ls_dir ~ E'^[0-9A-F]{24}.ready$') as foo" % xlogdir
 
         # do not provide host name and/or port if not provided
-        cmd = "psql %s -t -c \"%s\" " % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\" " % (self.connstring, sql)
         rc, results = self.executecmd(cmd, True)
         if rc != SUCCESS:
             errors = "%s" % (results)
@@ -673,7 +713,7 @@ class maint:
         sql = "show data_directory"
 
         # do not provide host name and/or port if not provided
-        cmd = "psql %s -t -c \"%s\" " % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\" " % (self.connstring, sql)
 
         rc, results = self.executecmd(cmd, True)
         if rc != SUCCESS:
@@ -714,7 +754,6 @@ class maint:
 
     ###########################################################
     def get_load(self):
-
         if self.opsys == 'posix':
             cmd = "cat /proc/cpuinfo | grep processor | wc -l"
             rc, results = self.executecmd(cmd, True)
@@ -724,7 +763,7 @@ class maint:
                 self.writeout(aline)
                 return rc, errors
             CPUs = int(results)
-
+            
             cmd = "uptime | grep -ohe 'load average[s:][: ].*' | awk '{ print $5 }'"
             rc, results = self.executecmd(cmd, True)
             if rc != SUCCESS:
@@ -733,12 +772,8 @@ class maint:
                 self.writeout(aline)
                 return rc, errors
             LOAD15=Decimal(results)
-
             LOADR= round(LOAD15/CPUs * 100,2)
-            #if self.verbose:
-            #    print ("LOAD15 = %.2f  CPUs=%d LOAD = %.2f%%" % (LOAD15, CPUs, LOADR))
-            #print ("DEBUGGGGGG  LOAD15 = %.2f  CPUs=%d LOAD = %.2f%%" % (LOAD15, CPUs, LOADR))                
-
+            return SUCCESS, str(LOADR)
         else:
             # assume windows
             cmd = "wmic cpu get loadpercentage"
@@ -748,14 +783,20 @@ class maint:
                 aline = "%s" % (errors)
                 self.writeout(aline)
                 return rc, errors
-            #if self.verbose:
-            #    print ("windows load: %d %s" % (rc, results))
-            LOAD = results.split('\n')
-            LOADR = int(LOAD[1])
-
-        return SUCCESS, str(LOADR)
-
-
+            
+            # Safely parse WMIC output, ignoring empty lines
+            lines = [line.strip() for line in results.split('\n') if line.strip()]
+            if len(lines) > 1:
+                try:
+                    # If multiple CPUs, take the first value
+                    LOADR = int(lines[1])
+                except ValueError:
+                    LOADR = 0
+            else:
+                LOADR = 0
+            return SUCCESS, str(LOADR)
+            
+            
     ###########################################################
     def check_load(self):
 
@@ -779,7 +820,7 @@ class maint:
 
         sql = "select count(*) from pg_stat_replication where state = 'streaming'"
         
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get table/index bloat count: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -792,7 +833,7 @@ class maint:
         # Also check whether this cluster is a master or slave
         # self.in_recovery
         sql = "select pg_is_in_recovery()"
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get master/slave status: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1051,9 +1092,9 @@ class maint:
 
         sql = "SELECT schemaname, tablename, ROUND((CASE WHEN otta=0 THEN 0.0 ELSE sml.relpages::FLOAT/otta END)::NUMERIC,1) AS tbloat,  CASE WHEN relpages < otta THEN 0 ELSE bs*(sml.relpages-otta)::BIGINT END AS wastedbytes,  iname,   ROUND((CASE WHEN iotta=0 OR ipages=0 THEN 0.0 ELSE ipages::FLOAT/iotta END)::NUMERIC,1) AS ibloat, CASE WHEN ipages < iotta THEN 0 ELSE bs*(ipages-iotta) END AS wastedibytes FROM (SELECT  schemaname, tablename, cc.reltuples, cc.relpages, bs,  CEIL((cc.reltuples*((datahdr+ma- (CASE WHEN datahdr%ma=0 THEN ma ELSE datahdr%ma END))+nullhdr2+4))/(bs-20::FLOAT)) AS otta,  COALESCE(c2.relname,'?') AS iname, COALESCE(c2.reltuples,0) AS ituples, COALESCE(c2.relpages,0) AS ipages, COALESCE(CEIL((c2.reltuples*(datahdr-12))/(bs-20::FLOAT)),0) AS iotta FROM ( SELECT   ma,bs,schemaname,tablename,   (datawidth+(hdr+ma-(CASE WHEN hdr%ma=0 THEN ma ELSE hdr%ma END)))::NUMERIC AS datahdr,   (maxfracsum*(nullhdr+ma-(CASE WHEN nullhdr%ma=0 THEN ma ELSE nullhdr%ma END))) AS nullhdr2 FROM ( SELECT schemaname, tablename, hdr, ma, bs, SUM((1-null_frac)*avg_width) AS datawidth, MAX(null_frac) AS maxfracsum,  hdr+( SELECT 1+COUNT(*)/8 FROM pg_stats s2 WHERE null_frac<>0 AND s2.schemaname = s.schemaname AND s2.tablename = s.tablename ) AS nullhdr FROM pg_stats s, ( SELECT (SELECT current_setting('block_size')::NUMERIC) AS bs, CASE WHEN SUBSTRING(v,12,3) IN ('8.0','8.1','8.2') THEN 27 ELSE 23 END AS hdr, CASE WHEN v ~ 'mingw32' THEN 8 ELSE 4 END AS ma FROM (SELECT version() AS v) AS foo ) AS constants  GROUP BY 1,2,3,4,5 ) AS foo) AS rs  JOIN pg_class cc ON cc.relname = rs.tablename  JOIN pg_namespace nn ON cc.relnamespace = nn.oid AND nn.nspname = rs.schemaname AND nn.nspname <> 'information_schema' LEFT JOIN pg_index i ON indrelid = cc.oid LEFT JOIN pg_class c2 ON c2.oid = i.indexrelid ) AS sml where ROUND((CASE WHEN otta=0 THEN 0.0 ELSE sml.relpages::FLOAT/otta END)::NUMERIC,1) > 20 OR ROUND((CASE WHEN iotta=0 OR ipages=0 THEN 0.0 ELSE ipages::FLOAT/iotta END)::NUMERIC,1) > 20 or CASE WHEN relpages < otta THEN 0 ELSE bs*(sml.relpages-otta)::BIGINT END > 10737418240 OR CASE WHEN ipages < iotta THEN 0 ELSE bs*(ipages-iotta) END > 10737418240 ORDER BY wastedbytes DESC"
         if self.html_format:
-            cmd = "psql %s --html -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
+            cmd = "psql -X %s --html -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
         else:
-            cmd = "psql %s -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
+            cmd = "psql -X %s -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get table/index bloat: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1106,9 +1147,9 @@ class maint:
         sql="SELECT relname as table, schemaname||'.'||indexrelname AS fqindexname, pg_size_pretty(pg_relation_size(indexrelid)) as total_size, pg_relation_size(indexrelid) as raw_size, idx_scan as index_scans FROM pg_stat_user_indexes JOIN pg_index USING(indexrelid) WHERE idx_scan = 0 AND idx_tup_read = 0 AND idx_tup_fetch = 0 AND NOT indisprimary AND NOT indisunique AND NOT indisexclusion AND indisvalid AND indisready AND pg_relation_size(indexrelid) > 8192 ORDER BY 4 DESC"
 
         if self.html_format:
-            cmd = "psql %s --html -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
+            cmd = "psql -X %s --html -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
         else:
-            cmd = "psql %s -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
+            cmd = "psql -X %s -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get unused indexes: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1166,9 +1207,9 @@ class maint:
         if self.freezecandidates == True:
             sql = "WITH settings AS (select s.setting from pg_settings s where s.name = 'autovacuum_freeze_max_age') select s.setting as autovac_freeze_max_age, n.nspname as schema, c.relname as table, age(c.relfrozenxid) as xid_age, pg_size_pretty(pg_table_size(c.oid)) as table_size, round((age(c.relfrozenxid)::float / s.setting::float) * 100) as pct from settings s, pg_class c, pg_namespace n WHERE n.oid = c.relnamespace and c.relkind = 'r' and pg_table_size(c.oid) > 1073741824 and round((age(c.relfrozenxid)::float / s.setting::float) * 100) > 50 ORDER BY age(c.relfrozenxid)"
             if self.html_format:
-                cmd = "psql %s --html -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
+                cmd = "psql -X %s --html -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
             else:
-                cmd = "psql %s -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
+                cmd = "psql -X %s -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
             rc, results = self.executecmd(cmd, False)
             if rc != SUCCESS:
                 errors = "Unable to get user table stats: %d %s\ncmd=%s\n" % (rc, results, cmd)
@@ -1219,9 +1260,9 @@ class maint:
         sql = "select n.nspname || '.' || c.relname as table, last_analyze, last_autoanalyze, last_vacuum, last_autovacuum, u.n_live_tup::bigint, c.reltuples::bigint, round((u.n_live_tup::float / CASE WHEN c.reltuples = 0 THEN 1.0 ELSE c.reltuples::float  END) * 100) as pct from pg_namespace n, pg_class c, pg_tables t, pg_stat_user_tables u where c.relnamespace = n.oid and n.nspname = t.schemaname and t.tablename = c.relname and t.schemaname = u.schemaname and t.tablename = u.relname and n.nspname not in ('information_schema','pg_catalog') and (((c.reltuples > 0 and round((u.n_live_tup::float / c.reltuples::float) * 100) < 50)) OR ((last_vacuum is null and last_autovacuum is null and last_analyze is null and last_autoanalyze is null ) or (now()::date  - last_vacuum::date > 60 AND now()::date - last_autovacuum::date > 60 AND now()::date  - last_analyze::date > 60 AND now()::date  - last_autoanalyze::date > 60))) order by n.nspname, c.relname"
 
         if self.html_format:
-            cmd = "psql %s --html -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
+            cmd = "psql -X %s --html -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
         else:
-            cmd = "psql %s -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
+            cmd = "psql -X %s -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
             
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
@@ -1388,7 +1429,7 @@ class maint:
         #####################
         # SELECT datname, blks_read, blks_hit, round((blks_hit::float/(blks_read+blks_hit+1)*100)::numeric, 2) as cachehitratio FROM pg_stat_database ORDER BY datname, cachehitratio
         sql = "SELECT blks_read, blks_hit, round((blks_hit::float/(blks_read+blks_hit+1)*100)::numeric, 2) as cachehitratio FROM pg_stat_database where datname = '%s' ORDER BY datname, cachehitratio" % self.database
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get database cache hit ratio: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1440,7 +1481,7 @@ class maint:
         # get connection counts and compare to max connections
         ######################################################
         sql = "select count(*) from pg_stat_activity"
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get count of current connections: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1480,7 +1521,7 @@ class maint:
         else:
             # select substring(query,1,50), round(EXTRACT(EPOCH FROM (now() - query_start))), now(), query_start, state  from pg_stat_activity;
             sql = "select count(*) from pg_stat_activity where state = \'idle in transaction\' and round(EXTRACT(EPOCH FROM (now() - query_start))) > 10"
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get count of idle in transaction connections: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1515,7 +1556,7 @@ class maint:
         else:
             # select pid,datname,usename, client_addr, now(), state, query_start, substring(query,1,100), now() - query_start as duration from pg_stat_activity where state not ilike 'idle%' and query <> ''::text and now() - query_start > interval '5 minutes';
             sql = "select count(*) from pg_stat_activity where state not ilike 'idle%' and query <> ''::text and now() - query_start > interval '5 minutes'"
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get count of long running queries: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1553,7 +1594,7 @@ class maint:
             # v2.2 fix: add backend_type qualifier to not consider walsender
             sql = "select count(*) from pg_stat_activity where wait_event is NOT NULL and wait_event not in ('DataFileRead') and state = 'active' and backend_type <> 'walsender' and now() - query_start > interval '30 seconds'"
 
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get count of blocked queries: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1641,7 +1682,7 @@ class maint:
             sql="select datname, conflicts from pg_stat_database where datname = '%s'" % self.database
         else:
             sql="select datname, conflicts, deadlocks, temp_files, temp_bytes from pg_stat_database where datname = '%s'" % self.database
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get database conflicts: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1682,8 +1723,17 @@ class maint:
         # NOTE: Checkpoints should happen every few minutes, not less than 5 minutes and not more than 15-30 minutes
         #       unless recovery time is not a priority and High I/O SQL workload is in which case 1 hour is reasonable.
         ###############################################################################################################
-        sql = "SELECT total_checkpoints, seconds_since_start / total_checkpoints / 60 AS minutes_between_checkpoints, checkpoints_timed, checkpoints_req, checkpoint_write_time, checkpoint_sync_time FROM (SELECT EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time())) AS seconds_since_start, (checkpoints_timed+checkpoints_req) AS total_checkpoints, checkpoints_timed, checkpoints_req, checkpoint_write_time / 1000 as checkpoint_write_time, checkpoint_sync_time / 1000 as checkpoint_sync_time FROM pg_stat_bgwriter) AS sub"
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        if self.pgversionmajor < Decimal('17.0'):
+            sql = "SELECT total_checkpoints, seconds_since_start / total_checkpoints / 60 AS minutes_between_checkpoints, checkpoints_timed, checkpoints_req, checkpoint_write_time, checkpoint_sync_time FROM " \
+                  "(SELECT EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time())) AS seconds_since_start, (checkpoints_timed+checkpoints_req) AS total_checkpoints, checkpoints_timed, checkpoints_req, " \
+                  "checkpoint_write_time / 1000 as checkpoint_write_time, checkpoint_sync_time / 1000 as checkpoint_sync_time FROM pg_stat_bgwriter) AS sub"        
+        else:
+            # pg_stat_checkpointer.
+            sql = "SELECT total_checkpoints, seconds_since_start / total_checkpoints / 60 AS minutes_between_checkpoints, checkpoints_timed, checkpoints_req, checkpoint_write_time, checkpoint_sync_time FROM "\
+                  "(SELECT EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time())) AS seconds_since_start, (num_timed+num_requested) AS total_checkpoints, num_timed as checkpoints_timed, num_requested as checkpoints_req,  "\
+                  "+ write_time / 1000 as checkpoint_write_time, sync_time / 1000 as checkpoint_sync_time FROM pg_stat_checkpointer) AS sub"
+            
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get checkpoint frequency: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1724,7 +1774,7 @@ class maint:
         # Check some postgresql config parms
         ####################################
         sql = "with summary as (select name, setting from pg_settings where name in ('autovacuum', 'checkpoint_completion_target', 'data_checksums', 'idle_in_transaction_session_timeout', 'log_checkpoints', 'log_lock_waits',  'log_min_duration_statement', 'log_temp_files', 'shared_preload_libraries', 'track_activity_query_size') order by 1 ) select setting from summary order by name"
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)        
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)        
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get configuration parameters: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1802,8 +1852,12 @@ class maint:
         # Check checkpoints, background writers, and backend writers
         ############################################################
         # v2.1 fix: divident could be zero and cause division by zero error, so check first.
-        sql = "select buffers_checkpoint + buffers_checkpoint + buffers_clean + buffers_backend as buffers from pg_stat_bgwriter"
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        if self.pgversionmajor < Decimal('17.0'):
+            sql = "select buffers_checkpoint + buffers_clean + buffers_backend as buffers from pg_stat_bgwriter"  
+        else:
+            sql = "SELECT c.buffers_written + b.buffers_clean + COALESCE((SELECT SUM(writes) FROM pg_stat_io WHERE backend_type <> 'checkpointer' AND backend_type <> 'background writer'), 0) AS buffers FROM pg_stat_checkpointer c CROSS JOIN pg_stat_bgwriter b"
+        
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get background/backend buffers count: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1821,9 +1875,30 @@ class maint:
                 self.appendreport(marker+msg+"\n")
             print (marker+msg)
         else:            
-            sql = "select checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_clean, maxwritten_clean, buffers_backend, buffers_backend_fsync, buffers_alloc, checkpoint_write_time / 1000 as checkpoint_write_time, checkpoint_sync_time / 1000 as checkpoint_sync_time, (100 * checkpoints_req) / (checkpoints_timed + checkpoints_req) AS checkpoints_req_pct,    pg_size_pretty(buffers_checkpoint * block_size / (checkpoints_timed + checkpoints_req)) AS avg_checkpoint_write,  pg_size_pretty(block_size * (buffers_checkpoint + buffers_clean + buffers_backend)) AS total_written,  100 * buffers_checkpoint / (buffers_checkpoint + buffers_clean + buffers_backend) AS checkpoint_write_pct,    100 * buffers_clean / (buffers_checkpoint + buffers_clean + buffers_backend) AS background_write_pct, 100 * buffers_backend / (buffers_checkpoint + buffers_clean + buffers_backend) AS backend_write_pct from pg_stat_bgwriter, (SELECT cast(current_setting('block_size') AS integer) AS block_size) bs"
-
-            cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+            if self.pgversionmajor < Decimal('17.0'):
+                sql = "select checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_clean, maxwritten_clean, buffers_backend, buffers_backend_fsync, buffers_alloc, " \
+                      "checkpoint_write_time / 1000 as checkpoint_write_time, checkpoint_sync_time / 1000 as checkpoint_sync_time, (100 * checkpoints_req) / (checkpoints_timed + checkpoints_req) AS checkpoints_req_pct, " \
+                      "pg_size_pretty(buffers_checkpoint * block_size / (checkpoints_timed + checkpoints_req)) AS avg_checkpoint_write,  " \
+                      "pg_size_pretty(block_size * (buffers_checkpoint + buffers_clean + buffers_backend)) AS total_written,  " \
+                      "100 * buffers_checkpoint / (buffers_checkpoint + buffers_clean + buffers_backend) AS checkpoint_write_pct,  " \
+                      "100 * buffers_clean / (buffers_checkpoint + buffers_clean + buffers_backend) AS background_write_pct, " \
+                      "100 * buffers_backend / (buffers_checkpoint + buffers_clean + buffers_backend) AS backend_write_pct from pg_stat_bgwriter, (SELECT cast(current_setting('block_size') AS integer) AS block_size) bs"
+            else:
+                sql = "WITH bs AS (SELECT current_setting('block_size')::bigint AS block_size), " \
+                      "     backend_io AS (SELECT COALESCE(SUM(writes), 0) AS buffers_backend FROM pg_stat_io WHERE backend_type = 'client backend' AND object = 'relation' AND context = 'normal') " \
+                      "SELECT c.num_timed AS checkpoints_timed, c.num_requested AS checkpoints_req, c.buffers_written AS buffers_checkpoint, b.buffers_clean, b.maxwritten_clean, io.buffers_backend, " \
+                      "0::bigint AS buffers_backend_fsync, " \
+                      "0::bigint AS buffers_alloc, " \
+                      "c.write_time / 1000.0 AS checkpoint_write_time, c.sync_time / 1000.0 AS checkpoint_sync_time, " \
+                      "100.0 * c.num_requested / NULLIF(c.num_timed + c.num_requested, 0) AS checkpoints_req_pct, " \
+                      "pg_size_pretty(c.buffers_written * bs.block_size / NULLIF(c.num_timed + c.num_requested, 0)) AS avg_checkpoint_write, " \
+                      "pg_size_pretty(bs.block_size * (c.buffers_written + b.buffers_clean + io.buffers_backend)) AS total_written, " \
+                      "100.0 * c.buffers_written / NULLIF(c.buffers_written + b.buffers_clean + io.buffers_backend, 0) AS checkpoint_write_pct, " \
+                      "100.0 * b.buffers_clean / NULLIF(c.buffers_written + b.buffers_clean + io.buffers_backend, 0) AS background_write_pct, " \
+                      "100.0 * io.buffers_backend / NULLIF(c.buffers_written + b.buffers_clean + io.buffers_backend, 0) AS backend_write_pct " \
+                      "FROM pg_stat_checkpointer c CROSS JOIN pg_stat_bgwriter b CROSS JOIN backend_io io CROSS JOIN bs"
+            
+            cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
             rc, results = self.executecmd(cmd, False)
             if rc != SUCCESS:
                 errors = "Unable to get background/backend writers: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1837,16 +1912,16 @@ class maint:
             buffers_clean         = int(cols[3].strip())
             maxwritten_clean      = int(cols[4].strip())
             buffers_backend       = int(cols[5].strip())
-            buffers_backend_fsync = int(cols[6].strip())
-            buffers_alloc         = int(cols[7].strip())
+            buffers_backend_fsync = int(float(cols[6].strip()))
+            buffers_alloc         = int(float(cols[7].strip()))
             checkpoint_write_time = int(float(cols[8].strip()))
             checkpoint_sync_time  = int(float(cols[9].strip()))
-            checkpoints_req_pct   = int(cols[10].strip())
+            checkpoints_req_pct   = int(float(cols[10].strip()))
             avg_checkpoint_write  = cols[11].strip()
             total_written         = cols[12].strip()
-            checkpoint_write_pct  = int(cols[13].strip())
-            background_write_pct  = int(cols[14].strip())
-            backend_write_pct     = int(cols[15].strip())
+            checkpoint_write_pct  = int(float(cols[13].strip()))
+            background_write_pct  = int(float(cols[14].strip()))
+            backend_write_pct     = int(float(cols[15].strip()))
 
             # calculate average checkpoint time
             avg_checkpoint_seconds = ((checkpoint_write_time + checkpoint_sync_time) / (checkpoints_timed + checkpoints_req))
@@ -1876,7 +1951,16 @@ class maint:
             if buffers_clean > buffers_backend:
                 marker = MARK_WARN
                 msg += "backends doing most of the cleaning. Consider increasing bgwriter_lru_multiplier and decreasing bgwriter_delay.  It could also be a problem with shared_buffers not being big enough."                        
-           
+
+            if buffers_backend == 0 and buffers_clean == 0:
+                trigger = False  # no activity
+            elif buffers_clean == 0:
+                trigger = buffers_backend > 0  # only backend activity exists
+            else:
+                trigger = buffers_backend > buffers_clean * 10.0
+            if trigger:
+                marker = MARK_WARN
+                msg += "buffers_backend is high relative to buffers_clean which means the bgwriter isn't keeping up with queries and are eating the latency."
             if msg != '':
                 html = "<tr><td width=\"5%\"><font color=\"red\">&#10060;</font></td><td width=\"20%\"><font color=\"red\">Checkpoint/Background/Backend Writers</font></td><td width=\"75%\"><font color=\"red\">" + msg + "</font></td></tr>" 
             else:
@@ -1941,7 +2025,7 @@ class maint:
         # Check for bloated tables/indexes
         ##################################
         sql = "SELECT count(*) FROM (SELECT  schemaname, tablename, cc.reltuples, cc.relpages, bs,  CEIL((cc.reltuples*((datahdr+ma- (CASE WHEN datahdr%ma=0 THEN ma ELSE datahdr%ma END))+nullhdr2+4))/(bs-20::FLOAT)) AS otta,  COALESCE(c2.relname,'?') AS iname, COALESCE(c2.reltuples,0) AS ituples, COALESCE(c2.relpages,0) AS ipages, COALESCE(CEIL((c2.reltuples*(datahdr-12))/(bs-20::FLOAT)),0) AS iotta FROM ( SELECT   ma,bs,schemaname,tablename,   (datawidth+(hdr+ma-(CASE WHEN hdr%ma=0 THEN ma ELSE hdr%ma END)))::NUMERIC AS datahdr,   (maxfracsum*(nullhdr+ma-(CASE WHEN nullhdr%ma=0 THEN ma ELSE nullhdr%ma END))) AS nullhdr2 FROM ( SELECT schemaname, tablename, hdr, ma, bs, SUM((1-null_frac)*avg_width) AS datawidth, MAX(null_frac) AS maxfracsum,  hdr+( SELECT 1+COUNT(*)/8 FROM pg_stats s2 WHERE null_frac<>0 AND s2.schemaname = s.schemaname AND s2.tablename = s.tablename ) AS nullhdr FROM pg_stats s, ( SELECT (SELECT current_setting('block_size')::NUMERIC) AS bs, CASE WHEN SUBSTRING(v,12,3) IN ('8.0','8.1','8.2') THEN 27 ELSE 23 END AS hdr, CASE WHEN v ~ 'mingw32' THEN 8 ELSE 4 END AS ma FROM (SELECT version() AS v) AS foo ) AS constants  GROUP BY 1,2,3,4,5 ) AS foo) AS rs  JOIN pg_class cc ON cc.relname = rs.tablename  JOIN pg_namespace nn ON cc.relnamespace = nn.oid AND nn.nspname = rs.schemaname AND nn.nspname <> 'information_schema' LEFT JOIN pg_index i ON indrelid = cc.oid LEFT JOIN pg_class c2 ON c2.oid = i.indexrelid ) AS sml where ROUND((CASE WHEN otta=0 THEN 0.0 ELSE sml.relpages::FLOAT/otta END)::NUMERIC,1) > 20 OR ROUND((CASE WHEN iotta=0 OR ipages=0 THEN 0.0 ELSE ipages::FLOAT/iotta END)::NUMERIC,1) > 20 or CASE WHEN relpages < otta THEN 0 ELSE bs*(sml.relpages-otta)::BIGINT END > 10737418240 OR CASE WHEN ipages < iotta THEN 0 ELSE bs*(ipages-iotta) END > 10737418240"
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get table/index bloat count: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -1971,7 +2055,7 @@ class maint:
         # Check for unused indexes
         ##########################
         sql="SELECT count(*) FROM pg_stat_user_indexes JOIN pg_index USING(indexrelid) WHERE idx_scan = 0 AND idx_tup_read = 0 AND idx_tup_fetch = 0 AND NOT indisprimary AND NOT indisunique AND NOT indisexclusion AND indisvalid AND indisready AND pg_relation_size(indexrelid) > 8192"
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get unused indexes count: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -2002,7 +2086,7 @@ class maint:
         sql="SELECT cast(extract(epoch from avg(now()-backend_start)) as integer) as age FROM pg_stat_activity " \
             "WHERE usename <> 'rdsadmin' AND datname IS NOT NULL AND " \
             "(backend_type not in ('logical replication launcher', 'autovacuum launcher') OR wait_event not in ('LogicalLauncherMain','AutoVacuumMain'))"
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get average connection time: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -2036,7 +2120,7 @@ class maint:
         # Check for vacuum freeze candidates
         ####################################
         sql="WITH settings AS (select s.setting from pg_settings s where s.name = 'autovacuum_freeze_max_age') select count(c.*) from settings s, pg_class c, pg_namespace n WHERE n.oid = c.relnamespace and c.relkind = 'r' and pg_table_size(c.oid) > 1073741824 and round((age(c.relfrozenxid)::float / s.setting::float) * 100) > 50"
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get vacuum freeze candidate count: %d %s\nsql=%s\n" % (rc, results, sql)
@@ -2066,7 +2150,7 @@ class maint:
         # Check for analyze candidates
         ##############################
         sql="select count(*) from pg_namespace n, pg_class c, pg_tables t, pg_stat_user_tables u where c.relnamespace = n.oid and n.nspname = t.schemaname and t.tablename = c.relname and t.schemaname = u.schemaname and t.tablename = u.relname and n.nspname not in ('information_schema','pg_catalog') and (((c.reltuples > 0 and round((u.n_live_tup::float / c.reltuples::float) * 100) < 50)) OR ((last_vacuum is null and last_autovacuum is null and last_analyze is null and last_autoanalyze is null ) or (now()::date  - last_vacuum::date > 60 AND now()::date - last_autovacuum::date > 60 AND now()::date  - last_analyze::date > 60 AND now()::date  - last_autoanalyze::date > 60)))"
-        cmd = "psql %s -t -c \"%s\"" % (self.connstring, sql)
+        cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
             errors = "Unable to get vacuum analyze candidate count: %d %s\nsql=%s\n" % (rc, results, sql)
