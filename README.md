@@ -62,15 +62,16 @@ Run report on entire test database and output to html format for web browser vie
 6.  Long Running Queries
 7.  Lock Waits
 8.  Archiving Status
-9.  Database conflicts, deadlocks, and temp_files.
-10.  Checkpoint Frequency
-11.  Configuration settings.
-12.  Checkpoint, Background, and Backend Writers
-13. Identify orphaned large objects.
-14.  Bloated tables/indexes are identified where at least 20% of the table/index is bloated or the wasted bytes is > 10 GB.
-15. Unused indexes
-16. Vacuum Freeze Candidates
-17. Analyze/Vacuum Analyze candidates
-18. PG memory configuration settings
-19. Linux Kernel Memory Capacity
+9.  Database conflicts, deadlocks, and temp_files
+10. Checkpoint Frequency
+11. Background Writer Checks
+12. Configuration settings
+13. Checkpoint, Background, and Backend Writers
+14. Identify orphaned large objects
+15. Bloated tables/indexes are identified where at least 20% of the table/index is bloated or the wasted bytes is > 10 GB.
+16. Unused indexes
+17. Vacuum Freeze Candidates
+18. Analyze/Vacuum Analyze candidates
+19. PG memory configuration settings
+20. Linux Kernel Memory Capacity
 
