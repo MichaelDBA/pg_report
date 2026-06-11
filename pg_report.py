@@ -1144,7 +1144,9 @@ class maint:
             return SUCCESS, ""
 
         # Criteria is indexes that are used less than 20 times and whose table size is > 100MB
-        sql="SELECT relname as table, schemaname||'.'||indexrelname AS fqindexname, pg_size_pretty(pg_relation_size(indexrelid)) as total_size, pg_relation_size(indexrelid) as raw_size, idx_scan as index_scans FROM pg_stat_user_indexes JOIN pg_index USING(indexrelid) WHERE idx_scan = 0 AND idx_tup_read = 0 AND idx_tup_fetch = 0 AND NOT indisprimary AND NOT indisunique AND NOT indisexclusion AND indisvalid AND indisready AND pg_relation_size(indexrelid) > 8192 ORDER BY 4 DESC"
+        sql="SELECT relname as table, schemaname||'.'||indexrelname AS fqindexname, pg_size_pretty(pg_relation_size(indexrelid)) as total_size, pg_relation_size(indexrelid) as raw_size, " \
+            "idx_scan as index_scans FROM pg_stat_user_indexes JOIN pg_index USING(indexrelid) WHERE idx_scan = 0 AND idx_tup_read = 0 AND idx_tup_fetch = 0 AND NOT indisprimary AND NOT " \
+            "indisunique AND NOT indisexclusion AND indisvalid AND indisready ORDER BY 4 DESC"
 
         if self.html_format:
             cmd = "psql -X %s --html -c \"%s\" > %s" % (self.connstring, sql, self.tempfile)
@@ -1158,9 +1160,9 @@ class maint:
             return rc, errors
 
         if self.html_format:
-            self.appendreport("<H4>Unused indexes are identified where there are no index scans and the size of the index is > 8 KB.</H4>\n")
+            self.appendreport("<H4>Unused indexes are identified where there are no index scans including tables with zero rows.</H4>\n")
         else:    
-            self.appendreport("\nUnused indexes are identified where there are no index scans and the size of the index  is > 8 KB.\n")
+            self.appendreport("\nUnused indexes are identified where there are no index scans including tables with zero rows.\n")
 
         # See if this cluster has dependent slaves and if so give information warning
         if self.slavecnt > 0:
