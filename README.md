@@ -51,7 +51,7 @@ Run report on entire test database and output to html format for web browser vie
 3. Password must be in local .pgpass file or client authentication changed to trust or peer
 4. Password can also be set in environment variable PGPASSWORD.
 5. psql must be in the user's path
-6. No .psqlrc file is used.
+6. psqlrc file is excluded via the -X psql parameter.
 
 ## Report logic
 1.  PG Major/Minor check
