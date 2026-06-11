@@ -141,8 +141,8 @@ HIGHLOAD  = 4
 DESCRIPTION="This python utility program performs a basic health check for a PostgreSQL cluster."
 VERSION    = 2.5
 PROGNAME   = "pg_report"
-ADATE      = "June 10, 2026"
-PROGDATE   = "2026-06-10"
+ADATE      = "June 11, 2026"
+PROGDATE   = "2026-06-11"
 MARK_OK    = "[ OK ]  "
 MARK_WARN  = "[WARN]  "
 
@@ -2054,7 +2054,8 @@ class maint:
         ##########################
         # Check for unused indexes
         ##########################
-        sql="SELECT count(*) FROM pg_stat_user_indexes JOIN pg_index USING(indexrelid) WHERE idx_scan = 0 AND idx_tup_read = 0 AND idx_tup_fetch = 0 AND NOT indisprimary AND NOT indisunique AND NOT indisexclusion AND indisvalid AND indisready AND pg_relation_size(indexrelid) > 8192"
+        sql="SELECT count(*) FROM pg_stat_user_indexes JOIN pg_index USING(indexrelid) WHERE idx_scan = 0 AND idx_tup_read = 0 AND idx_tup_fetch = 0 AND NOT indisprimary AND NOT indisunique AND NOT " \
+            "indisexclusion AND indisvalid AND indisready"
         cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
         if rc != SUCCESS:
