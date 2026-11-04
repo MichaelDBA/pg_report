@@ -113,6 +113,7 @@
 # Michael Vitale     05/29/2022     v2.3 Check local load
 # Michael Vitale     06/23/2022     v2.4 Bug fixes. Do not check local resources for remote DB servers.  Updated latest versions of PG.
 # Michael Vitale     06/10/2026     v2.5 Fix queries that relate to new tables, pg_stat_checkpointer and pg_stat_io. Also added windows compatibility.
+# Michael Vitale     11/04/2026     v2.6 Fix case where dbhost not provided; Added logic for vacuumlo in dryrun mode
 ################################################################################################################
 import string, sys, os, time
 #import datetime
@@ -139,10 +140,10 @@ NOTICE    = 2
 TOOLONG   = 3
 HIGHLOAD  = 4
 DESCRIPTION="This python utility program performs a basic health check for a PostgreSQL cluster."
-VERSION    = 2.5
+VERSION    = 2.6
 PROGNAME   = "pg_report"
-ADATE      = "June 11, 2026"
-PROGDATE   = "2026-06-11"
+ADATE      = "November 04, 2026"
+PROGDATE   = "2026-11-04"
 MARK_OK    = "[ OK ]  "
 MARK_WARN  = "[WARN]  "
 
@@ -1733,7 +1734,7 @@ class maint:
             # pg_stat_checkpointer.
             sql = "SELECT total_checkpoints, seconds_since_start / total_checkpoints / 60 AS minutes_between_checkpoints, checkpoints_timed, checkpoints_req, checkpoint_write_time, checkpoint_sync_time FROM "\
                   "(SELECT EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time())) AS seconds_since_start, (num_timed+num_requested) AS total_checkpoints, num_timed as checkpoints_timed, num_requested as checkpoints_req,  "\
-                  "+ write_time / 1000 as checkpoint_write_time, sync_time / 1000 as checkpoint_sync_time FROM pg_stat_checkpointer) AS sub"
+                  "write_time / 1000 as checkpoint_write_time, sync_time / 1000 as checkpoint_sync_time FROM pg_stat_checkpointer) AS sub"
             
         cmd = "psql -X %s -t -c \"%s\"" % (self.connstring, sql)
         rc, results = self.executecmd(cmd, False)
@@ -1989,11 +1990,16 @@ class maint:
             if self.dbuser == '':
                 user_clause = "-p %s" % (self.dbport)
             elif self.dbhost == '':
-                user_clause = " %s -U %s -p %s" % (self.dbuser, self.dbport)
+                # we dont need dbhost for local connections, assuming this is what it is
+                # user_clause = " %s -U %s -p %s" % (self.dbuser, self.dbport)
+                user_clause = " -U %s -p %s" % (self.dbuser, self.dbport)
             else:
                 user_clause = " -h %s -U %s -p %s" % (self.dbhost, self.dbuser, self.dbport)
 
-            cmd = "%s/vacuumlo -n %s %s" % (self.pgbindir, user_clause, self.database)
+            if self.dryrun:
+                cmd = "%s/vacuumlo -n %s %s" % (self.pgbindir, user_clause, self.database)
+            else:
+                cmd = "%s/vacuumlo %s %s" % (self.pgbindir, user_clause, self.database)
             rc, results = self.executecmd(cmd, False)
             if rc != SUCCESS:
                 errors = "Unable to get orphaned large objects: %d %s\ncmd=%s\n" % (rc, results, cmd)
@@ -2002,7 +2008,12 @@ class maint:
                 return rc, errors
 
             # expecting substring like this --> "Would remove 35 large objects from database "agmednet.core.image"."
-            numobjects = (results.split("Would remove"))[1].split("large objects")[0]
+            if "Would remove" in results:
+                numobjects = (results.split("Would remove"))[1].split("large objects")[0]
+            elif "Successfully removed" in results:
+                numobjects = (results.split("Successfully removed"))[1].split("large objects")[0]
+            else:
+                numobjects = "0"            
 
         if int(numobjects) == -1:
             marker = MARK_OK
